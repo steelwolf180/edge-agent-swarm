@@ -18,4 +18,4 @@ __pycache__/
 .vscode/
 
 # Docs (optional exclusion)
-docs/agent_swarm_architecture_spec_v0_6.docx
+agent_swarm_architecture_spec.docx
