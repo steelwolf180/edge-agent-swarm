@@ -15,7 +15,9 @@
 - [x] Re-confirm router mode / `--models-preset` / `--models-max 1` behave identically on 9595
 - [x] Re-validate token rates on 9595 (previous confirmed: Gemma ~14.8 tok/s, LFM ~115 tok/s) — builds can shift perf
 - [x] Re-validate model swap latency (previous confirmed: ~20–30s) — this drives your 2-swap pipeline budget
-- [ ] Confirm all four Docker containers (mermaid.ink, Infracost, Postgres, Phoenix) are still healthy with `--restart unless-stopped` post-upgrade
+- [x] Confirm Proton VPN reinstalled — **not required.** Pipeline is local-only (`localhost` for mermaid.ink, Infracost, Postgres, Phoenix); only outbound traffic is `git push` (HTTPS) and `apt`, neither needs a VPN. Skipped as non-blocking.
+- [x] Confirm Docker containers (mermaid.ink, Infracost, Phoenix) healthy with `--restart unless-stopped` post-upgrade — **note: Postgres is a native `apt install`, not a Docker container** (per spec §4 Existing Systems); only 3 services actually run in Docker. `pg_isready -h localhost -p 5432` confirms it independently.
+- [x] Confirm Docker Desktop itself is set to start on login (`systemctl --user enable docker-desktop`) — `--restart unless-stopped` only governs containers once the daemon is up; it won't launch Docker Desktop after a crash or logout.
 
 ---
 
@@ -39,9 +41,32 @@
 
 ## 3. Infrastructure (Docker)
 
-- [ ] Confirm `mermaid.ink` container reachable at `localhost:3001`
-- [ ] Smoke test: POST base64-encoded Mermaid source → confirm image returned
-- [ ] Confirm Infracost GraphQL API reachable at `localhost:4000`
+- [x] Confirm `mermaid.ink` container reachable at `localhost:3001`
+- [x] Smoke test: GET URL-safe-base64-encoded Mermaid source → confirm image returned (see corrected command below — endpoint is **GET**, not POST)
+- [x] Confirm Infracost GraphQL API reachable at `localhost:4000` (bare GET returns `400` — expected; needs a POST with a GraphQL query body to return `200`)
+
+**mermaid.ink known issue (Ubuntu 26.04) — Chromium sandbox failure:**
+Ubuntu 23.10+ restricts unprivileged user namespaces via AppArmor by default, which breaks Puppeteer/Chromium's sandbox inside the container (`No usable sandbox!`, zygote crash, restart loop). Fix: add `--cap-add=SYS_ADMIN` to the container's run command. Scoped to this container only — does not weaken host-wide AppArmor.
+
+Corrected run command (also fixes a quoting bug in the original `NODE_OPTIONS` value that caused silent failures):
+```bash
+docker run -d --restart unless-stopped \
+  --cap-add=SYS_ADMIN \
+  -e 'NODE_OPTIONS=--max-http-header-size=102400000' \
+  -p 3001:3000 \
+  --name mermaid-ink \
+  ghcr.io/jihchi/mermaid.ink
+```
+
+Corrected smoke test (endpoint expects **GET** + **URL-safe** base64, not POST + standard base64):
+```bash
+echo -n 'C4Context
+    Person(user, "User")
+    System(sys, "System")' | base64 -w0 | tr '+/' '-_' > /tmp/test.b64
+
+curl -s http://localhost:3001/img/$(cat /tmp/test.b64) -o /tmp/test.png
+file /tmp/test.png   # should report JPEG/PNG image data, not "ASCII text"
+```
 
 ---
 
