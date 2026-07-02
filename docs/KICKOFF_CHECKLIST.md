@@ -9,13 +9,12 @@
 
 ## 0. Pre-Flight: Reconcile Spec with Current Environment
 
-- [ ] Update spec/doc references from llama.cpp build 8783 → **build 9595**
-- [ ] Update OS references from Ubuntu 24 LTS → **Ubuntu 26.04 "resolute"**
-- [ ] Re-confirm `--jinja` flag still triggers Gemma tool calling correctly on build 9595
-- [ ] Re-confirm router mode / `--models-preset` / `--models-max 1` behave identically on 9595
-- [ ] Re-validate token rates on 9595 (previous confirmed: Gemma ~14.8 tok/s, LFM ~115 tok/s) — builds can shift perf
-- [ ] Re-validate model swap latency (previous confirmed: ~20–30s) — this drives your 2-swap pipeline budget
-- [ ] Confirm Proton VPN reinstalled (removed during Ubuntu upgrade) if any dev step needs outbound access
+- [x] Update spec/doc references from llama.cpp build 8783 → **build 9595**
+- [x] Update OS references from Ubuntu 24 LTS → **Ubuntu 26.04 "resolute"**
+- [x] Re-confirm `--jinja` flag still triggers Gemma tool calling correctly on build 9595
+- [x] Re-confirm router mode / `--models-preset` / `--models-max 1` behave identically on 9595
+- [x] Re-validate token rates on 9595 (previous confirmed: Gemma ~14.8 tok/s, LFM ~115 tok/s) — builds can shift perf
+- [x] Re-validate model swap latency (previous confirmed: ~20–30s) — this drives your 2-swap pipeline budget
 - [ ] Confirm all four Docker containers (mermaid.ink, Infracost, Postgres, Phoenix) are still healthy with `--restart unless-stopped` post-upgrade
 
 ---
