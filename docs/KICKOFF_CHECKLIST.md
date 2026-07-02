@@ -24,7 +24,7 @@
 
 - [x] Confirm/create `steelwolf180/edge-agent-swarm` (private)
 - [x] Register local self-hosted runner on ZenBook
-- [ ] Add `.gitignore` — exclude `~/models/`, `.env`, `__pycache__`, venv dirs, `*.gguf`
+- [x] Add `.gitignore` — exclude `~/models/`, `.env`, `__pycache__`, venv dirs, `*.gguf`
 - [ ] Commit `GETTING_STARTED.md` and this checklist as first commits
 - [ ] Confirm Personal Access Token (with `api` or `write_repository` scope) is set up for HTTPS push
 

@@ -1,1 +1,21 @@
+# Models
+models/
+
+# Environment
+.env
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+
+# Model weights
+*.gguf
+
+# IDE
+.vscode/
+
+# Docs (optional exclusion)
 docs/agent_swarm_architecture_spec_v0_6.docx
