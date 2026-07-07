@@ -35,7 +35,7 @@
 
 - [x] Create folder scaffold: `agents/`, `artifacts/v1/`, `eval/`, `schemas/`, `pipeline/`, `tests/`
 - [x] Add `eval/rubric_v1.json` — versioned Judge thresholds for the five metrics (`spof_count`, `redundancy_ratio`, `cost_per_component`, `integration_coverage`, `adrs_per_diff`)
-- [ ] Add `README.md` with architecture overview + local setup instructions
+- [x] Add `README.md` with architecture overview + local setup instructions
 
 ---
 
