@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "metrics": {
+    "spof_count": {
+      "direction": "lower_is_better",
+      "target": 0,
+      "flag_threshold": 1,
+      "flag_reason": "Any SPOF flags for human review"
+    },
+    "redundancy_ratio": {
+      "direction": "higher_is_better",
+      "target": 0.8,
+      "flag_threshold": 0.5,
+      "flag_reason": "Rough placeholder threshold, not yet system-type aware. Below 0.5 flags for human review, see Known Limitations Metric Context Blindness"
+    },
+    "cost_per_component": {
+      "direction": "lower_is_better",
+      "target": 1,
+      "flag_threshold": 5,
+      "flag_reason": "Rough placeholder dollar figure, not yet system-type aware. Above 5 flags for human review, see Known Limitations Metric Context Blindness"
+    },
+    "integration_coverage": {
+      "direction": "higher_is_better",
+      "target": 1.0,
+      "flag_threshold": 0.8,
+      "flag_reason": "Below 0.8 flags for human review"
+    },
+    "adrs_per_diff": {
+      "direction": "higher_is_better",
+      "target": 1,
+      "flag_threshold": 1,
+      "flag_reason": "Below 1 means a spec diff occurred without a corresponding ADR, flag"
+    }
+  }
+}
