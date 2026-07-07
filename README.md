@@ -83,6 +83,31 @@ Full step-by-step validation lives in `KICKOFF_CHECKLIST.md`. Summary:
    ```
    `models.ini` sets `jinja = true` for Gemma (required for tool calling) and `--threads 4` for both models.
 
+### Start the inference server
+
+```bash
+./scripts/start_llama_router.sh
+```
+Starts llama-server in router mode on port 8080 using `models.ini`. Logs to `logs/llama-router.log`.
+
+### Stop the server
+```bash
+./scripts/stop_llama_router.sh
+```
+
+### Smoke test a model
+
+```bash
+./tests/smoke/test_llama.sh gemma   # or: lfm
+```
+
+Sends a single chat completion request and reports:
+- raw response
+- whether `reasoning_content` is present (should be absent — confirms `reasoning = off` took effect)
+- timing/tok-per-second data
+
+Run this after starting the server and after any `models.ini` change, before building on top of either model.
+
 4. **Docker services** (all `--restart unless-stopped`; confirm Docker Desktop autostart is enabled first: `systemctl --user enable docker-desktop`)
    ```bash
    # mermaid.ink — requires --cap-add=SYS_ADMIN on Ubuntu 26.04 (AppArmor sandbox fix)
