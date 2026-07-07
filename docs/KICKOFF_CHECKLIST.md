@@ -72,12 +72,12 @@ file /tmp/test.png   # should report JPEG/PNG image data, not "ASCII text"
 
 ## 4. Database
 
-- [ ] Write + run migration for application schema (separate from DBOS system tables):
+- [x] Write + run migration for application schema (separate from DBOS system tables):
   - `spec_versions` — versioned input specs
   - `artifacts` — approved outputs per run
   - `revision_cycles` — rejection records
   - `pipeline_runs` — maps `workflow_id` to spec_version and status
-- [ ] Confirm DBOS connects to PostgreSQL 18.4 at `localhost:5432` and system tables init cleanly
+- [x] Confirm DBOS connects to PostgreSQL 18.4 at `localhost:5432` and system tables init cleanly
 
 ---
 
