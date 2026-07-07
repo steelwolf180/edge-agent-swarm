@@ -83,11 +83,11 @@ file /tmp/test.png   # should report JPEG/PNG image data, not "ASCII text"
 
 ## 5. llama-server
 
-- [ ] Write `models.ini` preset (Gemma + LFM, `--threads 4`, `jinja = true` for Gemma)
-- [ ] Start server in router mode: `--models-preset models.ini --models-max 1 --port 8080`
-- [ ] Smoke test Gemma via curl — confirm response + tok/s
-- [ ] Smoke test LFM via curl — confirm response + tok/s
-- [ ] Confirm LRU model swap triggers cleanly
+- [x] Write `models.ini` preset (Gemma + LFM, `--threads 4`, `jinja = true` for Gemma)
+- [x] Start server in router mode: `--models-preset models.ini --models-max 1 --port 8080`
+- [x] Smoke test Gemma via curl — confirm response + tok/s
+- [x] Smoke test LFM via curl — confirm response + tok/s
+- [x] Confirm LRU model swap triggers cleanly
 
 ---
 
