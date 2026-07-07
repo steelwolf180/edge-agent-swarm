@@ -19,3 +19,6 @@ __pycache__/
 
 # Docs (optional exclusion)
 agent_swarm_architecture_spec.docx
+
+# llama.cpp
+logs/
