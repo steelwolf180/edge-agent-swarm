@@ -1,0 +1,22 @@
+# Agent Swarm at the Edge — swarm conda env (Python 3.11)
+# Generated for spec v0.7 / KICKOFF_CHECKLIST.md
+# Install with: pip install -r requirements.txt --break-system-packages
+# (or inside the activated `swarm` conda env, drop the --break-system-packages flag)
+
+# --- Orchestration / workflow ---
+dbos
+psycopg[binary]
+
+# --- Structured output / validation ---
+pydantic>=2.0
+
+# --- Diffing (ADR trigger detection) ---
+deepdiff
+
+# --- LLM client / tool calls (llama-server, mermaid.ink, Infracost) ---
+httpx
+
+# --- Observability ---
+arize-phoenix
+opentelemetry-api
+opentelemetry-sdk
