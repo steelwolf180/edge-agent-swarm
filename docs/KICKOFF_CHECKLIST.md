@@ -14,11 +14,11 @@
 - [x] Re-confirm `--jinja` flag still triggers Gemma tool calling correctly on build 9595
 - [x] Re-confirm router mode / `--models-preset` / `--models-max 1` behave identically on 9595
 - [x] Re-validate token rates on 9595 (previous confirmed: Gemma ~14.8 tok/s, LFM ~115 tok/s) — builds can shift perf
-- [x] Re-validate model swap latency (previous confirmed: ~20–30s) — this drives your 2-swap pipeline budget
+- [x] Re-validate model swap latency — measured ~13s total for a two-swap cycle under low-contention conditions (v0.9); prior ~20–30s figure retained only as a conservative planning ceiling, not the current measured value
 - [x] Confirm Proton VPN reinstalled — **not required.** Pipeline is local-only (`localhost` for mermaid.ink, Infracost, Postgres, Phoenix); only outbound traffic is `git push` (HTTPS) and `apt`, neither needs a VPN. Skipped as non-blocking.
 - [x] Confirm Docker containers (mermaid.ink, Infracost, Phoenix) healthy with `--restart unless-stopped` post-upgrade — **note: Postgres is a native `apt install`, not a Docker container** (per spec §4 Existing Systems); only 3 services actually run in Docker. `pg_isready -h localhost -p 5432` confirms it independently.
-- [x] Confirm Docker Desktop itself is set to start on login (`systemctl --user enable docker-desktop`) — `--restart unless-stopped` only governs containers once the daemon is up; it won't launch Docker Desktop after a crash or logout.
-- [x] Swap file /swapfile2 added and persisted in /etc/fstab — required to absorb ~3.4–3.7GB Gemma→LFM handoff transient confirmed via reproducible RSS/swap testing
+- [x] Confirm Docker Engine is enabled on boot (`systemctl enable docker`) — v0.9 migration from Docker Desktop to native Docker Engine (docker-ce, docker-ce-cli, containerd.io); `--restart unless-stopped` only governs containers once the daemon is up, it won't start the daemon itself after a reboot.
+- [x] Swap file /swapfile2 added and persisted in /etc/fstab — originally sized to absorb a ~3.4–3.7GB Gemma→LFM handoff transient; v0.9 post-Docker Engine-migration testing shows swap usage stayed flat at 764MB (pre-existing, unrelated to model swap) across a full two-swap cycle, no growth, no OOM. Docker Desktop VM overhead, not the model swap, was the leading suspect. Swapfile kept as a safety margin.
 
 ---
 

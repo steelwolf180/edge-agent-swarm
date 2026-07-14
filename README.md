@@ -4,7 +4,7 @@ Spec-driven, multi-agent architecture review pipeline that runs entirely on loca
 
 It automates the C4 diagram + Architecture Decision Record (ADR) discipline for solo developers, small teams, and solution architects, closing the gap between technical and business stakeholders. It is not a code generation tool.
 
-> Full spec: `agent_swarm_architecture_spec.docx` (v0.7)
+> Full spec: `agent_swarm_architecture_spec.docx` (v0.9)
 > Public overview: `agent_swarm_at_the_edge_public.docx`
 > Environment setup: `KICKOFF_CHECKLIST.md` — start there before this README if you're bootstrapping from scratch.
 
@@ -108,7 +108,7 @@ Sends a single chat completion request and reports:
 
 Run this after starting the server and after any `models.ini` change, before building on top of either model.
 
-4. **Docker services** (all `--restart unless-stopped`; confirm Docker Desktop autostart is enabled first: `systemctl --user enable docker-desktop`)
+4. **Docker services** (all `--restart unless-stopped`; confirm Docker Engine is enabled on boot first: `systemctl enable docker` — v0.9 migrated from Docker Desktop to native Docker Engine, eliminating its Linux VM overhead)
    ```bash
    # mermaid.ink — requires --cap-add=SYS_ADMIN on Ubuntu 26.04 (AppArmor sandbox fix)
    docker run -d --restart unless-stopped --cap-add=SYS_ADMIN \
@@ -122,7 +122,7 @@ Run this after starting the server and after any `models.ini` change, before bui
 
 5. **PostgreSQL** — native `apt install`, not Docker. Confirm with `pg_isready -h localhost -p 5432`.
 
-6. **DB migration** — application schema (`spec_versions`, `artifacts`, `revision_cycles`, `pipeline_runs`) is not yet written; run the migration script once it lands (Kickoff Checklist §4) before first pipeline run.
+6. **DB migration** — application schema (`spec_versions`, `artifacts`, `revision_cycles`, `pipeline_runs`) is created and validated on PostgreSQL 18 (Kickoff Checklist §4, complete).
 
 7. **Run the pipeline**
    ```bash
@@ -156,4 +156,4 @@ See spec §7 for the full list — output quality depends on input spec quality,
 
 ## Status
 
-v0.7. Open item: application DB schema migration (see `KICKOFF_CHECKLIST.md` §4) is the primary unblocking task.
+v0.9. Database (§4) and llama-server (§5) infrastructure validated. Open item: per-agent build & validation (see `KICKOFF_CHECKLIST.md` §6) is the primary unblocking task.
