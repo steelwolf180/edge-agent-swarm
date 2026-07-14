@@ -51,7 +51,7 @@ def _require_env(key: str) -> str:
 LLAMA_ROOT_SERVER_URL = _require_env("LLAMA_SERVER_URL")
 BASE_URL = f"{LLAMA_ROOT_SERVER_URL}/v1/chat/completions"
 
-MODEL_NAME = _require_env("FULL_GEMMA_MODEL_NAME")  # must match the alias in models.ini
+MODEL_NAME = _require_env("GEMMA_MODEL_NAME")  # must match the alias in models.ini
 MAX_TOKENS = int(_require_env("ARCHITECT_TOKEN_BUDGET"))  # per spec §6 context window budget for Architect
 
 ARTIFACTS_ROOT = Path("artifacts")
@@ -231,7 +231,7 @@ def call_architect(
     pricing_context: dict[str, Any],
     base_url: str = BASE_URL,
     artifacts_root: Path = ARTIFACTS_ROOT,
-    timeout: float = 60.0,
+    timeout: float = 120.0,
 ) -> ArchitectOutput:
     """Single completion call against llama-server. No tool calling, no --jinja.
 
@@ -252,7 +252,7 @@ def call_architect(
     response = httpx.post(base_url, json=payload, timeout=timeout)
     response.raise_for_status()
     raw_text = response.json()["choices"][0]["message"]["content"]
-
+    
     sections = parse_model_sections(raw_text)
 
     provenance = DiagramProvenance(
