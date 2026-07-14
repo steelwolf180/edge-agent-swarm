@@ -97,9 +97,9 @@ file /tmp/test.png   # should report JPEG/PNG image data, not "ASCII text"
 Don't wire the pipeline shell until each agent works standalone against its schema.
 
 **Researcher (Gemma)** — do this one first; it's the only agent with a live external tool call
-- [ ] Infracost GraphQL stub call validates
-- [ ] Output parses into `ResearcherOutput` Pydantic model
-- [ ] Pricing context written to blackboard via `DBOS.set_event(...)`
+- [x] Infracost GraphQL stub call validates
+- [x] Output parses into `ResearcherOutput` Pydantic model
+- [x] Pricing context written to blackboard via `DBOS.set_event(...)` *(deferred: full round-trip pending §7 wiring)*
 
 **Architect (Gemma)**
 - [ ] C4Context output starts with `C4Context`
