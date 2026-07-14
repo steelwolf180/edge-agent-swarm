@@ -102,9 +102,9 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [x] Pricing context written to blackboard via `DBOS.set_event(...)` *(deferred: full round-trip pending §7 wiring)*
 
 **Architect (Gemma)**
-- [ ] C4Context output starts with `C4Context`
+- [x] C4Context output starts with `C4Context`
 - [ ] Diagram renders correctly in mermaid.ink
-- [ ] `ArchitectOutput` validates (`context_diagram`, `diagram_source`, `docs`, `components`)
+- [x] `ArchitectOutput` validates (`context_diagram`, `diagram_source`, `docs`, `components`)
 
 **Scribe (LFM)**
 - [ ] `deepdiff` on `model_dump()` produces diff input
