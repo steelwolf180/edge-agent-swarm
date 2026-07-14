@@ -156,6 +156,20 @@ def run_researcher(spec_text: str) -> ResearcherOutput:
         services = _extract_services_fallback(spec_text)
         tool_result = query_infracost(services)
         tool_call_succeeded = False
+
+        # Fixed: pricing data must reach the summary call even on the
+        # fallback path. Folded into a user-role message rather than a
+        # synthetic "tool" message, since we don't have a real tool_call_id
+        # to attach it to and some OpenAI-compatible servers validate that.
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"Pricing data (from a stubbed/fallback lookup, not a "
+                    f"model-initiated tool call): {json.dumps(tool_result)}"
+                ),
+            }
+        )
     else:
         call = tool_calls[0]
         args = json.loads(call["function"]["arguments"])
@@ -172,10 +186,11 @@ def run_researcher(spec_text: str) -> ResearcherOutput:
             }
         )
 
-    # Second pass: get the natural-language summary now that pricing is known.
-    final = _call_gemma(messages + [
-        {"role": "user", "content": "Summarise the pricing context in under 150 words."}
-    ] if tool_calls else messages)
+    # Second pass: get the natural-language summary now that pricing is
+    # known — always included now, regardless of which branch above ran.
+    final = _call_gemma(
+        messages + [{"role": "user", "content": "Summarise the pricing context in under 150 words."}]
+    )
     summary = final["choices"][0]["message"]["content"].strip()
 
     pricing_items = [PricingLineItem(**item) for item in tool_result["line_items"]]
@@ -188,7 +203,6 @@ def run_researcher(spec_text: str) -> ResearcherOutput:
         tool_call_succeeded=tool_call_succeeded,
     )
     return output
-
 
 def write_to_blackboard(output: ResearcherOutput, workflow_id: str | None = None) -> None:
     """
