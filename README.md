@@ -15,6 +15,12 @@ It automates the C4 diagram + Architecture Decision Record (ADR) discipline for 
 Five agents run sequentially over a shared DBOS blackboard, with a human approval gate before anything persists:
 
 ```
+                                              ┌─────────────────────────────┐
+                                              │  PostgreSQL: prior ADR       │
+                                              │  (most recent approved)      │
+                                              └───────────────┬───────────────┘
+                                                              │ read
+                                                              ▼
 Researcher (Gemma) → Architect (Gemma) → [swap] → Scribe (LFM) → Critic (LFM) → [swap] → Judge (Gemma)
                                                                                               ↓
                                                                                      Human review (CLI)
@@ -26,7 +32,7 @@ Researcher (Gemma) → Architect (Gemma) → [swap] → Scribe (LFM) → Critic 
 | Agent | Model | Role | Tools |
 |---|---|---|---|
 | Researcher | Gemma 4 E4B QAT | Enriches blackboard with context + cloud pricing | Infracost GraphQL |
-| Architect | Gemma 4 E4B QAT | Generates C4 L1 System Context diagram (Mermaid) | none |
+| Architect | Gemma 4 E4B QAT | Generates C4 L1 System Context diagram (Mermaid); reads blackboard + most recent approved ADR from the artifact store, so revisions are informed by why prior decisions were made, not just the raw spec diff | none |
 | Scribe | LFM2.5-VL-1.6B | Detects spec diff, drafts ADR | none |
 | Critic | LFM2.5-VL-1.6B | Devil's advocate: gaps, SPOFs, missing integrations | none |
 | Judge | Gemma 4 E4B QAT | Scores output against 5 metrics | Calculator |
@@ -147,7 +153,9 @@ artifacts/v1/    approved run outputs (Mermaid diagrams, ADRs)
 eval/            eval/rubric_v1.json — versioned Judge thresholds
 schemas/         Pydantic models
 pipeline/        DBOS workflow, send_approval.py
+scripts/         start_llama_router.sh, stop_llama_router.sh
 tests/
+  smoke/         test_llama.sh — per-model smoke test (gemma | lfm)
 ```
 
 ## Known Limitations
