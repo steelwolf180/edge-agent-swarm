@@ -22,3 +22,9 @@ agent_swarm_architecture_spec.docx
 
 # llama.cpp
 logs/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
