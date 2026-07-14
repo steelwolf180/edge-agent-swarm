@@ -18,6 +18,7 @@
 - [x] Confirm Proton VPN reinstalled — **not required.** Pipeline is local-only (`localhost` for mermaid.ink, Infracost, Postgres, Phoenix); only outbound traffic is `git push` (HTTPS) and `apt`, neither needs a VPN. Skipped as non-blocking.
 - [x] Confirm Docker containers (mermaid.ink, Infracost, Phoenix) healthy with `--restart unless-stopped` post-upgrade — **note: Postgres is a native `apt install`, not a Docker container** (per spec §4 Existing Systems); only 3 services actually run in Docker. `pg_isready -h localhost -p 5432` confirms it independently.
 - [x] Confirm Docker Desktop itself is set to start on login (`systemctl --user enable docker-desktop`) — `--restart unless-stopped` only governs containers once the daemon is up; it won't launch Docker Desktop after a crash or logout.
+- [x] Swap file /swapfile2 added and persisted in /etc/fstab — required to absorb ~3.4–3.7GB Gemma→LFM handoff transient confirmed via reproducible RSS/swap testing
 
 ---
 
