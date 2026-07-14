@@ -104,7 +104,7 @@ def test_researcher_output_requires_summary():
 
 def test_researcher_output_rejects_malformed_json():
     malformed = '{"services_identified": ["EC2"], "pricing": [}'
-    with pytest.raises(json.JSONDecodeError):
+    with pytest.raises(ValidationError):
         ResearcherOutput.model_validate_json(malformed)
 
 
