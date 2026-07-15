@@ -63,7 +63,7 @@ class DiagramProvenance(BaseModel):
     )
     informed_by_adrs: list[str] = Field(
         default_factory=list,
-        description="adr_id values from artifacts/adr/ that were loaded into the prompt "
+        description="adr_id values from artifacts/v<n>/adr_*.md that were loaded into the prompt "
         "as prior-decision context for this generation. Empty on the first run.",
     )
 
