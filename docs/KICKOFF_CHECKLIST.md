@@ -102,14 +102,15 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [x] Pricing context written to blackboard via `DBOS.set_event(...)` *(deferred: full round-trip pending §7 wiring)*
 
 **Architect (Gemma)**
+- [x] Reads prior accepted ADRs from `artifacts/v*/adr_*.md` (`ADRRecord`) and folds them into the prompt as `PRIOR_DECISIONS`; superseded/rejected ADRs correctly excluded
 - [x] C4Context output starts with `C4Context`
 - [x] Diagram renders correctly in mermaid.ink
 - [x] `ArchitectOutput` validates (`context_diagram`, `diagram_source`, `docs`, `components`)
 
 **Scribe (LFM)**
-- [ ] `deepdiff` on `model_dump()` produces diff input
-- [ ] `ADROutput` validates (`context`, `decision`, `consequences`, `diff_summary`, `affected_diagrams`)
-- [ ] `affected_diagrams` restricted to `'context'` only for MVP
+- [x] `deepdiff` on `model_dump()` produces diff input
+- [x] `ADROutput` validates (`context`, `decision`, `consequences`, `diff_summary`, `affected_diagrams`)
+- [x] `affected_diagrams` restricted to `'context'` only for MVP
 
 **Critic (LFM)**
 - [ ] `CriticOutput` validates (`gaps`, `spofs`, `missing_integrations`)
@@ -125,14 +126,18 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 ## 7. DBOS Pipeline
 
 - [ ] Wrap each agent call as `@DBOS.step()`
+- [ ] Confirm blackboard spec dict includes `spec_version` merged in before Architect's `@DBOS.step()` call (`ArchitectureSpec.model_dump()` alone won't have it)
 - [ ] Wrap each thermal guard check as its own `@DBOS.step()` (65°C / 5s poll / 120s timeout)
 - [ ] Print `workflow_id` to terminal on pipeline start
 - [ ] Write `pipeline/send_approval.py <workflow_id> [--reject "notes"]`
 - [ ] Confirm `DBOS.recv()` blocks correctly at human review
 - [ ] Confirm `DBOS.send()` from CLI unblocks the workflow
 - [ ] Approval path → outputs written to PostgreSQL + `artifacts/v<n>/`
+  - [ ] Assign `adr_id` (sequence against `spec_versions`, or UUID — undecided)
+  - [ ] Call `build_adr_record()` to bridge Scribe's `ADROutput` → `ADRRecord`
+  - [ ] Serialize `ADRRecord` → `adr_<NNNN>.md` (frontmatter + Context/Decision/Consequences body) — no writer exists yet, only the `architect.py` reader
+  - [ ] Decide `supersedes` population: human-specified at approval, or inferred from spec diff — currently unresolved
 - [ ] Rejection path → `revision_notes` written to blackboard, `revision_cycles` row inserted
-
 ---
 
 ## 8. End-to-End Run
