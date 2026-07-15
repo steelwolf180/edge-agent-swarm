@@ -103,7 +103,7 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 
 **Architect (Gemma)**
 - [x] C4Context output starts with `C4Context`
-- [ ] Diagram renders correctly in mermaid.ink
+- [x] Diagram renders correctly in mermaid.ink
 - [x] `ArchitectOutput` validates (`context_diagram`, `diagram_source`, `docs`, `components`)
 
 **Scribe (LFM)**
