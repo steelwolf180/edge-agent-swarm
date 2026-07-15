@@ -105,7 +105,7 @@ def _parse_adr_markdown(path: Path) -> ADRRecord:
         consequences=sections["consequences"],
         diff_summary=fields.get("diff_summary", ""),
         affected_diagrams=fields.get("affected_diagrams", []),
-        created_at=fields["created_at"],
+        created=fields["created"],
     )
 
 
