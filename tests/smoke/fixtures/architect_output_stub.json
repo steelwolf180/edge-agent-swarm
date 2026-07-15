@@ -1,0 +1,20 @@
+{
+  "context_diagram": "C4Context\n    title System Context diagram for Agent Swarm at the Edge\n    Person(engineer, \"Solo Engineer\", \"Submits spec, reviews output\")\n    System(pipeline, \"Agent Swarm Pipeline\", \"5-agent sequential architecture review\")\n    System_Ext(llama, \"llama-server\", \"Local inference, router mode\")\n    System_Ext(postgres, \"PostgreSQL\", \"Workflow state + versioned artifacts\")\n    System_Ext(infracost, \"Infracost API\", \"Self-hosted cloud pricing\")\n    System_Ext(mermaid, \"mermaid.ink\", \"Self-hosted diagram rendering\")\n    Rel(engineer, pipeline, \"Submits spec, approves/rejects output\")\n    Rel(pipeline, llama, \"Sends inference requests\")\n    Rel(pipeline, postgres, \"Reads/writes workflow state, artifacts\")\n    Rel(pipeline, infracost, \"Queries cloud pricing\")\n    Rel(pipeline, mermaid, \"Renders diagram source to PNG\")",
+  "diagram_source": {
+    "model": "gemma-4-e4b-qat",
+    "generated_at": "2026-07-15T06:00:00Z",
+    "spec_version": 1,
+    "informed_by_adrs": []
+  },
+  "docs": "Stub output for render pipeline testing. Not a real Gemma call.",
+  "components": [
+    {
+      "id": "pipeline",
+      "name": "Agent Swarm Pipeline",
+      "type": "internal_system",
+      "description": "5-agent sequential architecture review pipeline",
+      "technology": "Python / DBOS",
+      "redundant": false
+    }
+  ]
+}
