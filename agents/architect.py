@@ -5,21 +5,6 @@ Architect agent (Gemma 4 E4B QAT via llama-server, router mode).
 No tools — pure text generation. Reads spec + Researcher's pricing
 context off the blackboard, plus recent prior ADRs scanned from
 artifacts/v*/adr_*.md, and emits ArchitectOutput.
-
-DBOS wiring (spec §7) isn't done yet, so this module takes a plain
-blackboard dict rather than reading DBOS.get_event() directly. Once
-§7 lands, the pipeline step wraps call_architect() and hands it the
-real blackboard state; the ADR-folder read stays here regardless,
-since it's a filesystem concern local to this agent, not blackboard
-state.
-
-The model only generates context_diagram (Mermaid), docs, and
-components. diagram_source (provenance: model, timestamp, spec_version,
-informed_by_adrs) is assembled by this code after the call — it is
-never asked of the LLM.
-
-Usage (standalone smoke test, no DBOS/pipeline needed):
-    python agents/architect.py
 """
 
 from __future__ import annotations
@@ -51,20 +36,19 @@ def _require_env(key: str) -> str:
 LLAMA_ROOT_SERVER_URL = _require_env("LLAMA_SERVER_URL")
 BASE_URL = f"{LLAMA_ROOT_SERVER_URL}/v1/chat/completions"
 
-MODEL_NAME = _require_env("GEMMA_MODEL_NAME")  # must match the alias in models.ini
-MAX_TOKENS = int(_require_env("ARCHITECT_TOKEN_BUDGET"))  # per spec §6 context window budget for Architect
+MODEL_NAME = _require_env("GEMMA_MODEL_NAME")
+MAX_TOKENS = int(_require_env("ARCHITECT_TOKEN_BUDGET"))
 
 ARTIFACTS_ROOT = Path("artifacts")
-ADR_GLOB_PATTERN = "v*/adr_*.md"  # scans every versioned run folder, not a flat artifacts/adr/ dir
-ADR_CONTEXT_LIMIT = 3  # most recent ADRs to load — keep small, this eats into the 900 token budget
-ADR_DECISION_TRUNCATE = 200  # chars per decision summary in the prompt
+ADR_GLOB_PATTERN = "v*/adr_*.md"
+ADR_CONTEXT_LIMIT = 3
+ADR_DECISION_TRUNCATE = 200
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
 _SECTION_RE = re.compile(r"##\s*(Context|Decision|Consequences)\s*\n(.*?)(?=\n##|\Z)", re.DOTALL | re.IGNORECASE)
 
 
 def _parse_frontmatter(block: str) -> dict[str, Any]:
-    """Minimal key: value parser — no PyYAML dependency for a handful of scalar fields."""
     fields: dict[str, Any] = {}
     for line in block.splitlines():
         line = line.strip()
@@ -82,7 +66,6 @@ def _parse_frontmatter(block: str) -> dict[str, Any]:
 
 
 def _parse_adr_markdown(path: Path) -> ADRRecord:
-    """Parse one adr_*.md file (frontmatter + ## Context/Decision/Consequences body) into an ADRRecord."""
     text = path.read_text()
     match = _FRONTMATTER_RE.match(text)
     if not match:
@@ -110,12 +93,6 @@ def _parse_adr_markdown(path: Path) -> ADRRecord:
 
 
 def _load_recent_adrs(artifacts_root: Path = ARTIFACTS_ROOT, limit: int = ADR_CONTEXT_LIMIT) -> list[ADRRecord]:
-    """Load the most recent ADR records across all artifacts/v*/ folders, newest spec_version first.
-
-    Returns an empty list if no versioned artifact folders exist yet (first
-    run) or none contain valid ADR files. Malformed files are skipped with
-    a warning, not fatal — a corrupt ADR shouldn't block diagram generation.
-    """
     if not artifacts_root.exists():
         return []
 
@@ -127,12 +104,6 @@ def _load_recent_adrs(artifacts_root: Path = ARTIFACTS_ROOT, limit: int = ADR_CO
             print(f"WARNING: skipping malformed ADR file {path}: {e}")
             continue
 
-    # status is "accepted" for every real file — proposed/rejected live
-    # only in Postgres and never reach disk (see ADRRecord docstring for
-    # the resolved DB/file lifecycle split). This filter is now mostly
-    # defensive: a stray non-accepted file dropped in by hand shouldn't
-    # leak into Architect's context. supersedes is the real exclusion
-    # signal, cross-referenced next.
     superseded_ids = {sid for r in records for sid in r.supersedes}
     live_records = [
         r for r in records
@@ -203,13 +174,6 @@ def _extract_section(raw: str, start_marker: str, end_marker: str) -> str:
 
 
 def parse_model_sections(raw: str) -> dict[str, Any]:
-    """Parse the marker-delimited completion into the model-generated fields only.
-
-    Returns dict with keys: context_diagram, docs, components.
-    Does NOT include diagram_source — that's provenance, added by the caller.
-    Raises ValueError on malformed output so callers (and smoke tests) fail
-    loudly instead of silently passing bad data downstream.
-    """
     context_diagram = _extract_section(raw, "---DIAGRAM---", "---DOCS---")
     docs = _extract_section(raw, "---DOCS---", "---COMPONENTS---")
     components_raw = _extract_section(raw, "---COMPONENTS---", "---END---")
@@ -233,11 +197,6 @@ def call_architect(
     artifacts_root: Path = ARTIFACTS_ROOT,
     timeout: float = 120.0,
 ) -> ArchitectOutput:
-    """Single completion call against llama-server. No tool calling, no --jinja.
-
-    Loads recent ADRs from artifacts/v*/adr_*.md before prompting, and
-    records which ones were used in the returned provenance.
-    """
     adrs = _load_recent_adrs(artifacts_root)
     prior_decisions_text = _format_adr_context(adrs)
 
@@ -252,7 +211,7 @@ def call_architect(
     response = httpx.post(base_url, json=payload, timeout=timeout)
     response.raise_for_status()
     raw_text = response.json()["choices"][0]["message"]["content"]
-    
+
     sections = parse_model_sections(raw_text)
 
     provenance = DiagramProvenance(
@@ -271,8 +230,6 @@ def call_architect(
 
 
 if __name__ == "__main__":
-    # Stub blackboard for isolated testing — real values come from DBOS
-    # once §7 wiring is done. Keep small: ~900 token budget for this agent.
     stub_spec = {
         "spec_version": 1,
         "project_name": "Agent Swarm at the Edge",
@@ -280,7 +237,7 @@ if __name__ == "__main__":
         "components_hint": ["llama-server", "PostgreSQL", "DBOS pipeline", "mermaid.ink"],
     }
     stub_pricing_context = {
-        "postgres_rds_equivalent_usd_month": 0,  # self-hosted, no cloud cost
+        "postgres_rds_equivalent_usd_month": 0,
         "note": "Fully local deployment, Infracost stub for MVP",
     }
 
