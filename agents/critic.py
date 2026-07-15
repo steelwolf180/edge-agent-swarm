@@ -1,0 +1,110 @@
+"""Critic agent (LFM2.5-VL-1.6B). No tools -- devil's advocate against the
+Architect's diagram, given the ADR Scribe just wrote to explain the change.
+
+Standalone here per KICKOFF_CHECKLIST.md §6, same pattern as agents/scribe.py:
+plain typed inputs, no @DBOS.step() wrapper yet and no blackboard
+set_event/get_event reads (those get added at §7) -- this module takes
+what the blackboard would have handed it, so it can be smoke-tested without
+a running DBOS workflow.
+
+architect_output and adr_output are typed (ArchitectOutput / ADROutput) since
+both schemas already exist and the data flow names them explicitly. Anything
+else Critic might need -- spec-level integration_points, Researcher pricing
+context -- comes through blackboard_context as an opaque summarized string,
+same shape Scribe already takes for its own blackboard read.
+"""
+import json
+import os
+
+import httpx
+from pydantic import ValidationError
+
+from schemas.adr import ADROutput
+from schemas.architect import ArchitectOutput, Component
+from schemas.critic import CriticOutput
+
+from dotenv import load_dotenv
+load_dotenv()
+
+LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL") + "/v1/chat/completions"
+LFM_MODEL_NAME = os.environ.get("LFM_MODEL_NAME")  # must match the model name in models.ini
+
+CRITIC_SYSTEM_PROMPT = """You are the Critic agent in an architecture review pipeline.
+You play devil's advocate against a C4 System Context diagram and the ADR that explains it.
+You have no tools. Base your critique only on the diagram, components, ADR, and blackboard
+context given to you. Surface gaps, single points of failure, and integrations implied by
+the context but missing from the diagram. Do not default to agreement -- a diagram with zero
+flagged gaps should be the rare case, not the norm. If nothing is genuinely wrong, say so with
+an empty gaps list rather than inventing filler.
+Respond with a single JSON object matching this schema, and nothing else:
+{"gaps": [{"description": str, "severity": "low"|"medium"|"high", "related_component": str|null}],
+ "spofs": [str], "missing_integrations": [str]}"""
+
+
+def summarize_components(components: list[Component]) -> str:
+    """Compact bullet list of components for the prompt, staying inside the
+    ~700 token Critic budget (spec §4 Context Window Budget)."""
+    lines = []
+    for c in components:
+        redundancy = "redundant" if c.redundant else "no redundancy"
+        tech = f", {c.technology}" if c.technology else ""
+        lines.append(f"- [{c.id}] {c.name} ({c.type}{tech}, {redundancy}): {c.description}")
+    return "\n".join(lines) if lines else "No components listed."
+
+
+def build_user_prompt(
+    architect_output: ArchitectOutput,
+    adr_output: ADROutput,
+    blackboard_context: str,
+) -> str:
+    return (
+        f"C4 System Context diagram (Mermaid):\n{architect_output.context_diagram}\n\n"
+        f"Components:\n{summarize_components(architect_output.components)}\n\n"
+        f"Architect's supporting docs:\n{architect_output.docs}\n\n"
+        f"ADR just recorded for this change:\n"
+        f"Context: {adr_output.context}\n"
+        f"Decision: {adr_output.decision}\n"
+        f"Consequences: {adr_output.consequences}\n\n"
+        f"Blackboard context (spec + Researcher pricing, summarized):\n{blackboard_context}\n\n"
+        "Critique this now."
+    )
+
+
+async def run_critic(
+    architect_output: ArchitectOutput,
+    adr_output: ADROutput,
+    blackboard_context: str,
+    client: httpx.AsyncClient | None = None,
+) -> CriticOutput:
+    payload = {
+        "model": LFM_MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": build_user_prompt(architect_output, adr_output, blackboard_context),
+            },
+        ],
+        "temperature": 0.2,
+        "max_tokens": 700,
+    }
+
+    owns_client = client is None
+    client = client or httpx.AsyncClient(timeout=30.0)
+    try:
+        response = await client.post(LLAMA_SERVER_URL, json=payload)
+        response.raise_for_status()
+        raw = response.json()["choices"][0]["message"]["content"]
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Critic: LFM did not return valid JSON: {raw[:200]}") from e
+
+    try:
+        return CriticOutput.model_validate(parsed)
+    except ValidationError as e:
+        raise ValueError(f"Critic: LFM output failed CriticOutput validation: {e}") from e
