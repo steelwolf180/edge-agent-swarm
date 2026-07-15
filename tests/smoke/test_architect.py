@@ -59,6 +59,6 @@ def test_architect_output_validates(architect_output: ArchitectOutput) -> None:
 
 def test_diagram_renders_in_mermaid_ink(architect_output: ArchitectOutput) -> None:
     image_bytes = render_diagram_image(architect_output.context_diagram)
-    # PNG magic bytes — confirms mermaid.ink returned a real image, not an
-    # HTML error page or an empty response from a wrong port.
-    assert image_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+    # JPEG SOI magic bytes — confirms mermaid.ink returned a real image, not an
+    # HTML error page or empty response. mermaid.ink's /img/ endpoint returns
+    assert image_bytes[:3] == b"\xff\xd8\xff"
