@@ -113,8 +113,8 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [x] `affected_diagrams` restricted to `'context'` only for MVP
 
 **Critic (LFM)**
-- [ ] `CriticOutput` validates (`gaps`, `spofs`, `missing_integrations`)
-- [ ] Gap list non-empty against a deliberately weak test spec
+- [x] `CriticOutput` validates (`gaps`, `spofs`, `missing_integrations`)
+- [x] Gap list non-empty against a deliberately weak test spec — required raising the LFM completion cap from the input-budget figure (700, spec §6) to 1024; 700 truncated mid-JSON on the variable-length gap list. `CRITIC_TOKEN_BUDGET` in `.env` controls this, no code change needed if it needs retuning later.
 
 **Judge (Gemma)**
 - [ ] Calculator tool fires, returns deterministic scores
@@ -126,6 +126,7 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 ## 7. DBOS Pipeline
 
 - [ ] Wrap each agent call as `@DBOS.step()`
+  - [ ] Confirm `CRITIC_TOKEN_BUDGET` (`.env`, currently `1024`) still resolves correctly once `run_critic` runs inside a `@DBOS.step()` — `load_dotenv()` timing/process context can differ under DBOS's workflow execution vs. a bare script; a silent fallback to the 700 default would reintroduce the truncation bug found in §6
 - [ ] Confirm blackboard spec dict includes `spec_version` merged in before Architect's `@DBOS.step()` call (`ArchitectureSpec.model_dump()` alone won't have it)
 - [ ] Wrap each thermal guard check as its own `@DBOS.step()` (65°C / 5s poll / 120s timeout)
 - [ ] Print `workflow_id` to terminal on pipeline start
