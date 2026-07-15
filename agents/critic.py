@@ -29,21 +29,45 @@ load_dotenv()
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL") + "/v1/chat/completions"
 LFM_MODEL_NAME = os.environ.get("LFM_MODEL_NAME")  # must match the model name in models.ini
 
+# NOTE: spec §4's "Critic ~700 tokens" context-window figure is an INPUT prompt
+# budget, not an output completion cap -- Critic's output is a variable-length
+# list of gap objects (each with a full-sentence description), not a fixed-shape
+# record like Scribe's ADR, so it needs meaningfully more room than the input
+# budget number to avoid truncating mid-JSON.
+CRITIC_MAX_OUTPUT_TOKENS = int(os.environ.get("CRITIC_TOKEN_BUDGET"))
+
 CRITIC_SYSTEM_PROMPT = """You are the Critic agent in an architecture review pipeline.
 You play devil's advocate against a C4 System Context diagram and the ADR that explains it.
 You have no tools. Base your critique only on the diagram, components, ADR, and blackboard
 context given to you. Surface gaps, single points of failure, and integrations implied by
 the context but missing from the diagram. Do not default to agreement -- a diagram with zero
 flagged gaps should be the rare case, not the norm. If nothing is genuinely wrong, say so with
-an empty gaps list rather than inventing filler.
+an empty gaps list rather than inventing filler. Keep each gap description to one sentence.
 Respond with a single JSON object matching this schema, and nothing else:
 {"gaps": [{"description": str, "severity": "low"|"medium"|"high", "related_component": str|null}],
  "spofs": [str], "missing_integrations": [str]}"""
 
 
+def strip_code_fence(raw: str) -> str:
+    """Strip a markdown code fence (```json ... ``` or ``` ... ```) if present.
+
+    LFM sometimes wraps JSON output in a fence despite the system prompt
+    saying "a single JSON object and nothing else" -- prompting alone isn't
+    reliable enough to rule this out, so defend at the parsing layer too.
+    No-op if no fence is present.
+    """
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and the closing ```.
+        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[:-3]
+    return stripped.strip()
+
+
 def summarize_components(components: list[Component]) -> str:
     """Compact bullet list of components for the prompt, staying inside the
-    ~700 token Critic budget (spec §4 Context Window Budget)."""
+    ~700 token Critic input budget (spec §4 Context Window Budget)."""
     lines = []
     for c in components:
         redundancy = "redundant" if c.redundant else "no redundancy"
@@ -86,7 +110,7 @@ async def run_critic(
             },
         ],
         "temperature": 0.2,
-        "max_tokens": 700,
+        "max_tokens": CRITIC_MAX_OUTPUT_TOKENS,
     }
 
     owns_client = client is None
@@ -94,13 +118,23 @@ async def run_critic(
     try:
         response = await client.post(LLAMA_SERVER_URL, json=payload)
         response.raise_for_status()
-        raw = response.json()["choices"][0]["message"]["content"]
+        choice = response.json()["choices"][0]
+        raw = choice["message"]["content"]
     finally:
         if owns_client:
             await client.aclose()
 
+    # Catch truncation explicitly, before the JSON parser turns it into a
+    # confusing "Unterminated string" error further down.
+    if choice.get("finish_reason") == "length":
+        raise ValueError(
+            f"Critic: LFM hit max_tokens ({CRITIC_MAX_OUTPUT_TOKENS}) before finishing "
+            f"output. Raise CRITIC_MAX_OUTPUT_TOKENS or shorten the prompt. "
+            f"Partial output: {raw[:200]}"
+        )
+
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(strip_code_fence(raw))
     except json.JSONDecodeError as e:
         raise ValueError(f"Critic: LFM did not return valid JSON: {raw[:200]}") from e
 
