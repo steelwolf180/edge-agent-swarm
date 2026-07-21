@@ -16,5 +16,7 @@ def test_dbos_connects():
         "system_database_url": os.environ["DBOS_SYSTEM_DATABASE_URL"],
         "admin_port": 3002,
     }
-    DBOS(config=config)
+    dbos = DBOS(config=config)
     DBOS.launch()
+    assert DBOS.config is not None
+    assert DBOS.config["name"] == "edge-agent-swarm"
