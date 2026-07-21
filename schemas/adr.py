@@ -62,6 +62,18 @@ class ADROutput(BaseModel):
     diff_summary: str = Field(
         ..., description="Human-readable summary of the spec diff that triggered this ADR"
     )
+    diff_hunk_count: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Count of discrete deepdiff entries (values_changed, "
+            "dictionary_item_added/removed, iterable_item_added/removed, etc.) "
+            "between the prior and current ArchitectureSpec.model_dump(). "
+            "NOT model output -- attached by run_scribe() from the DeepDiff "
+            "object already computed for diff_summary, same treatment as "
+            "ArchitectOutput.diagram_source. Feeds Judge's adrs_per_diff metric."
+        ),
+    )
     affected_diagrams: list[Literal["context"]] = Field(
         default_factory=lambda: ["context"],
         description=(
