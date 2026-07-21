@@ -117,9 +117,9 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [x] Gap list non-empty against a deliberately weak test spec — required raising the LFM completion cap from the input-budget figure (700, spec §6) to 1024; 700 truncated mid-JSON on the variable-length gap list. `CRITIC_TOKEN_BUDGET` in `.env` controls this, no code change needed if it needs retuning later.
 
 **Judge (Gemma)**
-- [ ] Calculator tool fires, returns deterministic scores
-- [ ] All five metrics present in `JudgeOutput.scores`
-- [ ] Reads thresholds from `eval/rubric_v1.json` at runtime
+- [x] Calculator tool fires, returns deterministic scores
+- [x] All five metrics present in `JudgeOutput.scores`
+- [x] Reads thresholds from `eval/rubric_v1.json` at runtime
 
 ---
 
