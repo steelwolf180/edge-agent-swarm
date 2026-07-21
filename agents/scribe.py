@@ -62,6 +62,14 @@ def summarize_diff(diff: DeepDiff, max_items: int = 8) -> str:
             lines.append(f"- {change_type}: {path} -> {detail}")
     return "\n".join(lines[:max_items]) if lines else "No field-level changes detected."
 
+def hunk_count_from_diff(diff: DeepDiff) -> int:
+    """Total discrete change entries across all DeepDiff categories
+    (values_changed, dictionary_item_added/removed, etc.). Unbounded by
+    summarize_diff()'s max_items truncation -- this feeds Judge's
+    adrs_per_diff metric and should reflect the real diff, not the
+    prompt-truncated view Scribe's LLM saw. Never sent to the LLM, so it
+    costs nothing against Scribe's ~800 token input budget."""
+    return sum(len(items) for items in diff.to_dict().values())
 
 def build_user_prompt(diff_summary: str, blackboard_context: str) -> str:
     return (
@@ -79,6 +87,7 @@ async def run_scribe(
 ) -> ADROutput:
     diff = compute_spec_diff(prior_spec, current_spec)
     diff_summary = summarize_diff(diff)
+    hunk_count = hunk_count_from_diff(diff)
 
     payload = {
         "model": LFM_MODEL_NAME,
@@ -108,6 +117,10 @@ async def run_scribe(
     # MVP guardrail: force this regardless of what the model returned, rather than
     # trusting prompt compliance alone -- 'container' is out of scope until v2.
     parsed["affected_diagrams"] = ["context"]
+    # diff_hunk_count is never model output -- attached by code from the same
+    # DeepDiff object diff_summary was built from. Same treatment as
+    # affected_diagrams above and ArchitectOutput.diagram_source.
+    parsed["diff_hunk_count"] = hunk_count            # <-- new
 
     try:
         return ADROutput.model_validate(parsed)
