@@ -124,7 +124,8 @@ async def run_critic(
                 f"Body: {response.text[:500]}"
             )
         
-        raw = response.json()["choices"][0]["message"]["content"]
+        choice = response.json()["choices"][0]
+        raw = choice["message"]["content"]
     
     finally:
         if owns_client:
