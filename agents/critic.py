@@ -120,7 +120,7 @@ async def run_critic(
         
         if response.status_code >= 400:
             raise ValueError(
-                f"Scribe: llama-server returned {response.status_code}. "
+                f"Critic: llama-server returned {response.status_code}. "
                 f"Body: {response.text[:500]}"
             )
         
