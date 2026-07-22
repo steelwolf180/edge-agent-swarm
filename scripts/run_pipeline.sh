@@ -62,6 +62,78 @@ trap clear_pending_workflows EXIT
 
 clear_pending_workflows
 
+# ---------------------------------------------------------------------------
+# Thermal preflight — separate from the in-workflow @DBOS.step() thermal
+# guard in pipeline/run.py. That guard checks temp BETWEEN agent steps
+# during a run; it has no way to know how hot the machine already was
+# BEFORE the run started. A run kicked off back-to-back with a prior one
+# (or right after any other CPU-heavy work) can start from an elevated
+# baseline, eating into the margin the in-workflow guard assumes it has.
+# This check refuses to launch DBOS at all until the machine has cooled,
+# rather than starting Researcher on top of residual heat from last time.
+#
+# Uses its own THERMAL_PREFLIGHT_* vars (not THERMAL_MAX_C etc., which
+# govern the in-workflow guard) so the two can be tuned independently —
+# e.g. a stricter preflight bar than the in-run threshold, since there's
+# no cost to waiting a bit longer before you've even started.
+# ---------------------------------------------------------------------------
+
+for var in THERMAL_PREFLIGHT_MAX_C THERMAL_PREFLIGHT_POLL_S THERMAL_PREFLIGHT_TIMEOUT_S; do
+  if [ -z "${!var:-}" ]; then
+    echo "ERROR: $var not set in .env — thermal preflight has no silent fallback," >&2
+    echo "        same as THERMAL_MAX_C etc. Set it explicitly." >&2
+    exit 1
+  fi
+done
+
+read_cpu_temp_c() {
+  local out
+  out=$(sensors -u 2>/dev/null) || return 1
+
+  local temp
+  temp=$(echo "$out" | awk '
+    /Package id 0:/ { want=1; next }
+    want && /temp[0-9]+_input:/ { print $2; exit }
+  ')
+  if [ -z "$temp" ]; then
+    temp=$(echo "$out" | awk '
+      /Tctl:/ { want=1; next }
+      want && /temp[0-9]+_input:/ { print $2; exit }
+    ')
+  fi
+  if [ -z "$temp" ]; then
+    temp=$(echo "$out" | grep -oE 'temp[0-9]+_input:[[:space:]]*[0-9.]+' \
+      | grep -oE '[0-9.]+$' | sort -rn | head -1)
+  fi
+  [ -n "$temp" ] || return 1
+  echo "$temp"
+}
+
+echo "[preflight] Checking CPU temp is below ${THERMAL_PREFLIGHT_MAX_C}°C before starting..."
+temp="$(read_cpu_temp_c)" || {
+  echo "[preflight] WARNING: could not read sensors — skipping thermal preflight check." >&2
+  temp=""
+}
+
+if [ -n "$temp" ]; then
+  elapsed=0
+  while awk "BEGIN{exit !($temp >= $THERMAL_PREFLIGHT_MAX_C)}"; do
+    if [ "$elapsed" -ge "$THERMAL_PREFLIGHT_TIMEOUT_S" ]; then
+      echo "ERROR: CPU still at ${temp}°C after ${THERMAL_PREFLIGHT_TIMEOUT_S}s wait" >&2
+      echo "       (limit ${THERMAL_PREFLIGHT_MAX_C}°C). Machine has not cooled from a" >&2
+      echo "       prior run. Refusing to start rather than begin Researcher on top of" >&2
+      echo "       residual heat. Wait longer, or lower THERMAL_PREFLIGHT_MAX_C if this" >&2
+      echo "       baseline is expected on this machine." >&2
+      exit 1
+    fi
+    echo "[preflight] CPU at ${temp}°C >= ${THERMAL_PREFLIGHT_MAX_C}°C, waiting ${THERMAL_PREFLIGHT_POLL_S}s..."
+    sleep "$THERMAL_PREFLIGHT_POLL_S"
+    elapsed=$((elapsed + THERMAL_PREFLIGHT_POLL_S))
+    temp="$(read_cpu_temp_c)" || { echo "[preflight] WARNING: sensors read failed mid-wait, proceeding." >&2; break; }
+  done
+  echo "[preflight] CPU at ${temp}°C, OK to proceed."
+fi
+
 echo "[preflight] Checking Postgres..."
 if ! pg_isready -h localhost -p 5432 > /dev/null 2>&1; then
   echo "ERROR: Postgres not responding on :5432." >&2
