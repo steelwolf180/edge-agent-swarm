@@ -21,6 +21,7 @@ load_dotenv()
 
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL") + "/v1/chat/completions"
 LFM_MODEL_NAME = os.environ.get("LFM_MODEL_NAME")  # must match the model name in models.ini
+SCRIBE_MAX_OUTPUT_TOKENS = int(os.environ.get("SCRIBE_TOKEN_BUDGET"))
 
 SCRIBE_SYSTEM_PROMPT = """You are the Scribe agent in an architecture review pipeline.
 You write Architecture Decision Records (ADRs) in Context / Decision / Consequences form.
@@ -96,7 +97,7 @@ async def run_scribe(
             {"role": "user", "content": build_user_prompt(diff_summary, blackboard_context)},
         ],
         "temperature": 0.2,
-        "max_tokens": 800,
+        "max_tokens": SCRIBE_MAX_OUTPUT_TOKENS,
     }
 
     owns_client = client is None
