@@ -143,8 +143,40 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 
 - [x] Wrap each agent call as `@DBOS.step()`
   - [x] Confirm `CRITIC_TOKEN_BUDGET` (`.env`, currently `1024`) still resolves correctly once `run_critic` runs inside a `@DBOS.step()` — `load_dotenv()` timing/process context can differ under DBOS's workflow execution vs. a bare script; a silent fallback to the 700 default would reintroduce the truncation bug found in §6
-- [ ] Confirm blackboard spec dict includes `spec_version` merged in before Architect's `@DBOS.step()` call (`ArchitectureSpec.model_dump()` alone won't have it)
-- [ ] Wrap each thermal guard check as its own `@DBOS.step()` (65°C / 5s poll / 120s timeout)
+- [x] Confirmed: `spec_version` survives into Architect's step. Resolved via
+  `_require_spec_version()` (pipeline/run.py) — raises loudly if the raw
+  spec dict lacks `spec_version`, called once at workflow start. The
+  design choice made here: pass the raw dict through to `architect_step`
+  unchanged (not a re-built `ArchitectureSpec.model_dump()`), since
+  `ArchitectureSpec` itself deliberately has no `spec_version` field
+  (schemas/spec.py) — model_dump() would silently drop it. Fail-loud
+  guard, not an auto-merge.
+- [x] Wrap each thermal guard check as its own `@DBOS.step()` — implemented as
+  `run_thermal_guard()` (pipeline/run.py), wired after Researcher/Architect/
+  Scribe/Critic. Config: THERMAL_MAX_C=60, THERMAL_POLL_S=3,
+  THERMAL_TIMEOUT_S=120, THERMAL_COOLDOWN_S=15 (unconditional cooldown per
+  step, not in original spec). 60/3 chosen more conservative than spec's
+  65/5 pending sensors-monitored full pipeline run. Smoke-tested
+  (tests/smoke/test_thermal_guard.py, 8/8 passing incl. real sensors read
+  on ZenBook). Full run_pipeline.sh integration run: CONFIRMED
+  incident-free (22 Jul, workflow_id 4dc2da04-f2c7-4b41-915e-9ab301251bde).
+  Guard fired 3x across the full 5-agent run (63.0°C, 64.0°C, 62.0°C),
+  each recovered within poll window, no black-screen repeat of the
+  earlier incident. Total pipeline time 4m8s (03:14:32–03:18:40), under
+  5-min target. NOTE: spec §3 Observability still documents 65/5 —
+  update spec or retune config, currently out of sync.
+- [x] DBOS admin server port collides with mermaid-ink — both default to
+  3001 (spec §4 Integration Points). Resolved by setting `admin_port:
+  3010` in DBOSConfig rather than letting DBOS silently fail to bind,
+  which is what happened on first attempt.
+- [x] Step-boundary serialization: agent outputs cross `@DBOS.step()`
+  boundaries as `.model_dump(mode="json")` dicts, not raw Pydantic
+  instances, and are re-validated on receipt. Plain `.model_dump()`
+  leaves datetime fields (e.g. `DiagramProvenance.generated_at`) as live
+  `datetime` objects — DBOS checkpointing tolerates that (pickle), but
+  `json.dumps()` on the final result doesn't, which broke the print at
+  the end of the first real run. `mode="json"` fixes it at the source,
+  since the same dicts get written to Postgres/markdown at approval time.
 - [x] Print `workflow_id` to terminal on pipeline start
 - [ ] Write `pipeline/send_approval.py <workflow_id> [--reject "notes"]`
 - [ ] Confirm `DBOS.recv()` blocks correctly at human review
@@ -155,6 +187,7 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   - [ ] Serialize `ADRRecord` → `adr_<NNNN>.md` (frontmatter + Context/Decision/Consequences body) — no writer exists yet, only the `architect.py` reader
   - [ ] Decide `supersedes` population: human-specified at approval, or inferred from spec diff — currently unresolved
 - [ ] Rejection path → `revision_notes` written to blackboard, `revision_cycles` row inserted
+
 ---
 
 ## 8. End-to-End Run
