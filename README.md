@@ -131,6 +131,7 @@ Run this after starting the server and after any `models.ini` change, before bui
 6. **DB migration** — application schema (`spec_versions`, `artifacts`, `revision_cycles`, `pipeline_runs`) is created and validated on PostgreSQL 18 (Kickoff Checklist §4, complete).
 
 7. **Run the pipeline**
+   > Approval CLI is still in progress — see `KICKOFF_CHECKLIST.md` §7. `pipeline/send_approval.py` doesn't exist yet and `DBOS.recv()`/`DBOS.send()` unblocking isn't confirmed.
    ```bash
    python pipeline/run.py --spec path/to/spec.md
    # prints workflow_id
@@ -164,4 +165,4 @@ See spec §7 for the full list — output quality depends on input spec quality,
 
 ## Status
 
-v0.9. Database (§4) and llama-server (§5) infrastructure validated. Open item: per-agent build & validation (see `KICKOFF_CHECKLIST.md` §6) is the primary unblocking task.
+v0.9. §6 agent validation complete (all five agents: Researcher, Architect, Scribe, Critic, Judge). Open item: §7 DBOS pipeline wiring (see `KICKOFF_CHECKLIST.md` §7) is the primary unblocking task.
