@@ -32,11 +32,14 @@ what Researcher was smoke-tested against (a plain descriptive sentence) — wort
 confirming Researcher's tool-call fallback regex (_extract_services_fallback)
 still finds service names inside a JSON blob before trusting this end-to-end.
 
-SERIALIZATION NOTE: step boundaries pass .model_dump() dicts, not raw Pydantic
-instances, and re-validate on the receiving side. DBOS's default step
-serialization is JSON; Pydantic model instances aren't guaranteed to round-trip
-through that without a custom encoder, so dicts are the safer default until
-proven otherwise.
+SERIALIZATION NOTE: step boundaries pass .model_dump(mode="json") dicts, not
+raw Pydantic instances, and re-validate on the receiving side. Plain
+.model_dump() leaves datetime fields (e.g. DiagramProvenance.generated_at) as
+live datetime objects — DBOS's own checkpointing survives that fine (default
+step serialization is pickle), but stdlib json.dumps() doesn't, which is what
+broke the final result print in the first real run. mode="json" fixes it at
+the source rather than patching the print call, since these same dicts will
+eventually get written to Postgres/markdown in the approval-persistence step.
 """
 
 from __future__ import annotations
@@ -44,8 +47,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 
 from dbos import DBOS, DBOSConfig
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from agents.architect import call_architect
 from agents.critic import run_critic
@@ -108,12 +115,12 @@ def _summarize_for_critic(spec: dict, researcher: ResearcherOutput) -> str:
 
 @DBOS.step()
 def researcher_step(spec_text: str) -> dict:
-    return run_researcher(spec_text).model_dump()
+    return run_researcher(spec_text).model_dump(mode="json")
 
 
 @DBOS.step()
 def architect_step(spec: dict, pricing_context: dict) -> dict:
-    return call_architect(spec, pricing_context).model_dump()
+    return call_architect(spec, pricing_context).model_dump(mode="json")
 
 
 @DBOS.step()
@@ -125,7 +132,7 @@ async def scribe_step(
     prior = ArchitectureSpec.model_validate(prior_spec) if prior_spec else None
     current = ArchitectureSpec.model_validate(current_spec)
     adr_output = await run_scribe(prior, current, blackboard_context)
-    return adr_output.model_dump()
+    return adr_output.model_dump(mode="json")
 
 
 @DBOS.step()
@@ -137,7 +144,7 @@ async def critic_step(
     architect = ArchitectOutput.model_validate(architect_output)
     adr = ADROutput.model_validate(adr_output)
     critic_output = await run_critic(architect, adr, blackboard_context)
-    return critic_output.model_dump()
+    return critic_output.model_dump(mode="json")
 
 
 @DBOS.step()
@@ -157,7 +164,7 @@ def judge_step(
         adr=ADROutput.model_validate(adr_output),
         adr_count=adr_count,
     )
-    return result.model_dump()
+    return result.model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------
@@ -181,26 +188,37 @@ async def architecture_review_workflow(
     _require_spec_version(spec)
     spec_text = json.dumps(spec, indent=2)
 
+    DBOS.logger.info("[1/5] Researcher starting (Gemma)...")
     researcher_output = researcher_step(spec_text)
+    DBOS.logger.info("[1/5] Researcher done.")
 
+    DBOS.logger.info("[2/5] Architect starting (Gemma)...")
     architect_output = architect_step(
         spec,
         researcher_output["pricing_context"],
     )
+    DBOS.logger.info("[2/5] Architect done.")
 
     # --- model swap: Gemma -> LFM happens inside llama-server here ---
+    DBOS.logger.info("Model swap: Gemma -> LFM")
 
     scribe_blackboard = _summarize_for_scribe(
         ResearcherOutput.model_validate(researcher_output),
         ArchitectOutput.model_validate(architect_output),
     )
+    DBOS.logger.info("[3/5] Scribe starting (LFM)...")
     adr_output = await scribe_step(prior_spec, spec, scribe_blackboard)
+    DBOS.logger.info("[3/5] Scribe done.")
 
     critic_blackboard = _summarize_for_critic(spec, ResearcherOutput.model_validate(researcher_output))
+    DBOS.logger.info("[4/5] Critic starting (LFM)...")
     critic_output = await critic_step(architect_output, adr_output, critic_blackboard)
+    DBOS.logger.info("[4/5] Critic done.")
 
     # --- model swap: LFM -> Gemma happens inside llama-server here ---
+    DBOS.logger.info("Model swap: LFM -> Gemma")
 
+    DBOS.logger.info("[5/5] Judge starting (calculator, no LLM call)...")
     judge_output = judge_step(
         researcher_output,
         architect_output,
@@ -209,6 +227,7 @@ async def architecture_review_workflow(
         adr_output,
         adr_count,
     )
+    DBOS.logger.info("[5/5] Judge done. Pipeline complete.")
 
     return {
         "researcher": researcher_output,
@@ -224,7 +243,14 @@ async def architecture_review_workflow(
 # ---------------------------------------------------------------------------
 
 async def _run(spec_path: str, prior_spec_path: str | None, adr_count: int) -> None:
-    config: DBOSConfig = {"name": "edge-agent-swarm"}  # DBOS_SYSTEM_DATABASE_URL from .env
+    config: DBOSConfig = {
+        "name": "edge-agent-swarm",
+        "system_database_url": os.environ.get("DBOS_SYSTEM_DATABASE_URL"),
+        # DBOS's admin server defaults to port 3001, which mermaid-ink already
+        # owns on this stack (spec §4 Integration Points). Move it off that port
+        # rather than let it silently fail to bind (as it just did).
+        "admin_port": 3010,
+    }
     DBOS(config=config)
     DBOS.launch()
 
