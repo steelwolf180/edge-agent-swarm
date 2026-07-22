@@ -103,8 +103,15 @@ async def run_scribe(
     client = client or httpx.AsyncClient(timeout=30.0)
     try:
         response = await client.post(LLAMA_SERVER_URL, json=payload)
-        response.raise_for_status()
+        
+        if response.status_code >= 400:
+            raise ValueError(
+                f"Scribe: llama-server returned {response.status_code}. "
+                f"Body: {response.text[:500]}"
+            )
+        
         raw = response.json()["choices"][0]["message"]["content"]
+    
     finally:
         if owns_client:
             await client.aclose()
