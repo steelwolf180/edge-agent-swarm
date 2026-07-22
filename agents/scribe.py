@@ -32,6 +32,29 @@ For this MVP, affected_diagrams must always be exactly ["context"] -- L1 System 
 only diagram level in scope. Do not emit "container" even if the diff suggests a container-level change."""
 
 
+# TODO(reconcile): identical copy of agents/critic.py's strip_code_fence().
+# Same underlying issue -- LFM wraps JSON output in a markdown fence despite
+# both system prompts saying "a single JSON object and nothing else" -- so
+# this needs the same defense here that Critic already validated. Move both
+# copies to a shared module (e.g. agents/_json_utils.py) and import from
+# there instead of keeping two files in sync by hand.
+def strip_code_fence(raw: str) -> str:
+    """Strip a markdown code fence (```json ... ``` or ``` ... ```) if present.
+
+    LFM sometimes wraps JSON output in a fence despite the system prompt
+    saying "a single JSON object and nothing else" -- prompting alone isn't
+    reliable enough to rule this out, so defend at the parsing layer too.
+    No-op if no fence is present.
+    """
+    stripped = raw.strip()
+    if stripped.startswith("```"):
+        # Drop the opening fence line (``` or ```json) and the closing ```.
+        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
+        if stripped.rstrip().endswith("```"):
+            stripped = stripped.rstrip()[:-3]
+    return stripped.strip()
+
+
 def compute_spec_diff(
     prior_spec: ArchitectureSpec | None, current_spec: ArchitectureSpec
 ) -> DeepDiff:
@@ -126,7 +149,7 @@ async def run_scribe(
         )
 
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(strip_code_fence(raw))
     except json.JSONDecodeError as e:
         raise ValueError(f"Scribe: LFM did not return valid JSON: {raw[:200]}") from e
 
