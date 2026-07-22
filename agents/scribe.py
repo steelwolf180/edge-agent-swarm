@@ -100,7 +100,7 @@ async def run_scribe(
     }
 
     owns_client = client is None
-    client = client or httpx.AsyncClient(timeout=30.0)
+    client = client or httpx.AsyncClient(timeout=150.0)
     try:
         response = await client.post(LLAMA_SERVER_URL, json=payload)
         
