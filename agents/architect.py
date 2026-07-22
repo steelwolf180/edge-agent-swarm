@@ -210,8 +210,16 @@ def call_architect(
     }
     response = httpx.post(base_url, json=payload, timeout=timeout)
     response.raise_for_status()
-    raw_text = response.json()["choices"][0]["message"]["content"]
+    choice = response.json()["choices"][0]
+    raw_text = choice["message"]["content"]
 
+    if choice.get("finish_reason") == "length":
+        raise ValueError(
+            f"Architect: Gemma hit max_tokens ({MAX_TOKENS}) before finishing output. "
+            f"Raise ARCHITECT_TOKEN_BUDGET or shorten the prompt. "
+            f"Partial output: {raw_text[:300]}"
+        )
+    
     sections = parse_model_sections(raw_text)
 
     provenance = DiagramProvenance(
