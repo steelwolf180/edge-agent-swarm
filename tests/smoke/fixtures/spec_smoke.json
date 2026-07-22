@@ -1,0 +1,33 @@
+{
+  "spec_version": 1,
+  "project_overview": {
+    "purpose": "Smoke test the DBOS pipeline skeleton end-to-end",
+    "target_users": "Solo developer, internal test only",
+    "deployment_environment": "On-premise edge, single ZenBook UX325EA"
+  },
+  "functional_requirements": {
+    "core_features": ["Spec input form", "C4 diagram generation", "ADR generation"],
+    "key_user_flows": ["Submit spec -> pipeline runs -> consolidated output returned"],
+    "integration_points": ["EC2", "RDS", "S3"]
+  },
+  "non_functional_requirements": {
+    "performance": "Full pipeline under 5 minutes on CPU-only hardware",
+    "scalability": "Single-user, single-machine, no horizontal scaling",
+    "availability": "Local dev tool, no uptime SLA",
+    "security": "All data stays on-device, no cloud egress",
+    "observability": "Arize Phoenix, per-agent OTel spans"
+  },
+  "technical_constraints": {
+    "language_framework": ["Python 3.11", "DBOS", "Pydantic v2"],
+    "existing_systems": ["llama-server", "PostgreSQL", "Docker Engine"],
+    "budget_infra_limits": "No cloud spend, fully local execution",
+    "team_skillset": "Solo developer, Python-first, no TypeScript/Go"
+  },
+  "data_architecture": {
+    "data_sources": ["User-submitted architecture spec JSON"],
+    "storage_requirements": "Versioned artifact store in PostgreSQL",
+    "data_flow": "Spec -> Researcher -> Architect -> Scribe -> Critic -> Judge -> human review",
+    "retention_compliance": "No PII, internal technical content only, retained indefinitely"
+  },
+  "open_questions": []
+}
