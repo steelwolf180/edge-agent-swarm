@@ -111,11 +111,19 @@ async def run_scribe(
                 f"Body: {response.text[:500]}"
             )
         
-        raw = response.json()["choices"][0]["message"]["content"]
+        choice = response.json()["choices"][0]
+        raw = choice["message"]["content"]
     
     finally:
         if owns_client:
             await client.aclose()
+    
+    if choice.get("finish_reason") == "length":
+        raise ValueError(
+            f"Scribe: LFM hit max_tokens ({SCRIBE_MAX_OUTPUT_TOKENS}) before finishing "
+            f"output. Raise SCRIBE_TOKEN_BUDGET or shorten the prompt. "
+            f"Partial output: {raw[:200]}"
+        )
 
     try:
         parsed = json.loads(raw)
