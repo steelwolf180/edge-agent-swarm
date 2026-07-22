@@ -30,6 +30,7 @@ LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL")
 INFRACOST_URL = os.environ.get("INFRACOST_URL")
 GEMMA_MODEL_NAME = os.environ.get("GEMMA_MODEL_NAME")  # must match models.ini preset name
 INFRACOST_LIVE = os.environ.get("INFRACOST_LIVE") == "1"
+RESEARCHER_MAX_OUTPUT_TOKENS = int(os.environ.get("RESEARCHER_TOKEN_BUDGET"))
 
 SYSTEM_PROMPT = """You are the Researcher agent in an architecture review pipeline.
 Given a spec, identify the cloud services it depends on (e.g. EC2, RDS, S3),
@@ -125,6 +126,7 @@ def _call_gemma(messages: list[dict], tools: list[dict] | None = None) -> dict:
         "model": GEMMA_MODEL_NAME,
         "messages": messages,
         "temperature": 0.2,
+        "max_tokens": RESEARCHER_MAX_OUTPUT_TOKENS,
     }
     if tools:
         payload["tools"] = tools
@@ -132,7 +134,17 @@ def _call_gemma(messages: list[dict], tools: list[dict] | None = None) -> dict:
 
     resp = httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload, timeout=60.0)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    
+    if data["choices"][0].get("finish_reason") == "length":
+        partial = data["choices"][0].get("message", {}).get("content", "")
+        raise ValueError(
+            f"Researcher: Gemma hit max_tokens ({RESEARCHER_MAX_OUTPUT_TOKENS}) before "
+            f"finishing output. Raise RESEARCHER_TOKEN_BUDGET or shorten the prompt. "
+            f"Partial output: {partial[:200]}"
+        )
+
+    return data
 
 
 def run_researcher(spec_text: str) -> ResearcherOutput:
