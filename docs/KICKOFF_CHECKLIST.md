@@ -121,15 +121,31 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [x] All five metrics present in `JudgeOutput.scores`
 - [x] Reads thresholds from `eval/rubric_v1.json` at runtime
 
+**Token budget hardening (post-§6, cross-agent)**
+- [x] All four LLM-calling agents (Researcher, Architect, Scribe, Critic) now read
+  their output token cap from a dedicated `.env` var (`RESEARCHER_TOKEN_BUDGET`,
+  `ARCHITECT_TOKEN_BUDGET`, `SCRIBE_TOKEN_BUDGET`, `CRITIC_TOKEN_BUDGET`), each
+  with no silent fallback — a missing var raises loudly rather than defaulting
+  to a wrong value
+- [x] All four now check `finish_reason == "length"` explicitly and raise a
+  named error before attempting to parse output, rather than surfacing as a
+  confusing downstream JSON/parse failure
+- [x] Fixed a copy-paste bug in `critic.py`'s HTTP error message (mislabeled
+  "Scribe:" instead of "Critic:")
+- [x] `RESEARCHER_TOKEN_BUDGET` set to 2048 — reasoned estimate based on
+  Researcher's short expected output (tool call + <150-word summary), not
+  yet confirmed against observed `finish_reason` behavior the way Critic's
+  1024 was; worth a quick smoke-test pass to validate rather than assume
+
 ---
 
 ## 7. DBOS Pipeline
 
-- [ ] Wrap each agent call as `@DBOS.step()`
-  - [ ] Confirm `CRITIC_TOKEN_BUDGET` (`.env`, currently `1024`) still resolves correctly once `run_critic` runs inside a `@DBOS.step()` — `load_dotenv()` timing/process context can differ under DBOS's workflow execution vs. a bare script; a silent fallback to the 700 default would reintroduce the truncation bug found in §6
+- [x] Wrap each agent call as `@DBOS.step()`
+  - [x] Confirm `CRITIC_TOKEN_BUDGET` (`.env`, currently `1024`) still resolves correctly once `run_critic` runs inside a `@DBOS.step()` — `load_dotenv()` timing/process context can differ under DBOS's workflow execution vs. a bare script; a silent fallback to the 700 default would reintroduce the truncation bug found in §6
 - [ ] Confirm blackboard spec dict includes `spec_version` merged in before Architect's `@DBOS.step()` call (`ArchitectureSpec.model_dump()` alone won't have it)
 - [ ] Wrap each thermal guard check as its own `@DBOS.step()` (65°C / 5s poll / 120s timeout)
-- [ ] Print `workflow_id` to terminal on pipeline start
+- [x] Print `workflow_id` to terminal on pipeline start
 - [ ] Write `pipeline/send_approval.py <workflow_id> [--reject "notes"]`
 - [ ] Confirm `DBOS.recv()` blocks correctly at human review
 - [ ] Confirm `DBOS.send()` from CLI unblocks the workflow
@@ -146,7 +162,17 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [ ] Submit one full spec through all 5 agents
 - [ ] Confirm swap sequence: Gemma → LFM → Gemma (2 swaps total)
 - [ ] Confirm full run completes within 5-minute target, `--threads 4` powersave
-- [ ] Run sustained thermal check across the *whole* pipeline (not just per-agent — this hasn't been validated end-to-end yet)
+- [ ] Run sustained thermal check across the *whole* pipeline (not just
+  per-agent — this hasn't been validated end-to-end yet). **Note (22 July
+  2026):** one full pipeline run ended in a hard power-off (black screen,
+  no backlight, required power button) with no corresponding journald
+  event — thermal_zone0, systemd-oomd, and suspend/resume all checked
+  clean across the relevant boots, ruling out an OS-visible cause.
+  Decode speed also sagged well below the ~14.8 tok/s baseline during
+  the run (down to ~9.2 t/s), consistent with sustained load. Suspected:
+  EC/firmware-level thermal cutoff below what `thermal_zone0` reports —
+  not yet confirmed. This is the primary reason the thermal-guard-as-step
+  item above is treated as higher priority than checklist ordering implies.
 - [ ] Approve via CLI → confirm artifacts written
 - [ ] Run a second spec with a deliberate change → confirm ADR triggered by diff
 
