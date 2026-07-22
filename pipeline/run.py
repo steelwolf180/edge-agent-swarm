@@ -20,9 +20,19 @@ STILL OUT OF SCOPE for this pass (separate checklist items, don't fold in here):
     - Real DBOS blackboard set_event/get_event (the two _summarize_for_* helpers
       below are string-building placeholders standing in for a real blackboard read)
     - spec_version merge into ArchitectureSpec.model_dump()
-    - Thermal guard as its own @DBOS.step()
     - DBOS.recv()/send() human review gate
     - Approval persistence (adr_id, build_adr_record(), markdown serializer, supersedes)
+
+THERMAL GUARD (§7) — now wired below as thermal_guard_step(), called after
+each of the four LLM-calling agent steps (Researcher, Architect, Scribe,
+Critic; Judge is calculator-only, nothing follows it). Config comes from
+THERMAL_MAX_C / THERMAL_POLL_S / THERMAL_TIMEOUT_S / THERMAL_COOLDOWN_S in
+.env, no silent fallback — same pattern as *_TOKEN_BUDGET. THERMAL_MAX_C is
+set more conservatively (60C) than the spec's original 65C pending a
+sensors-monitored run to confirm actual climb rate near the 22 July
+hard-power-off incident (checklist §8) — retune once that data exists.
+This reduces risk but does NOT prove safety against a suspected EC/firmware-
+level thermal cutoff, since `sensors` reads ACPI/coretemp, not the EC.
 
 OPEN DESIGN QUESTION surfaced by this wiring pass, not resolved here: the spec
 flows into three different shapes — raw text (Researcher), dict (Architect),
@@ -48,6 +58,9 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import subprocess
+import time
 
 from dbos import DBOS, DBOSConfig
 from dotenv import load_dotenv
@@ -84,6 +97,121 @@ def _require_spec_version(spec: dict) -> int:
             "itself doesn't carry it (see schemas/spec.py docstring)."
         )
     return spec_version
+
+
+# ---------------------------------------------------------------------------
+# Thermal guard (§7) — wired as its own @DBOS.step() rather than inline
+# workflow logic, since reading sensor state and sleeping are both
+# non-deterministic. Config follows the same no-silent-fallback pattern as
+# RESEARCHER_TOKEN_BUDGET etc.: a missing/invalid var raises loudly instead
+# of quietly defaulting to a wrong number.
+#
+# NOTE ON NUMBERS: THERMAL_MAX_C is set more conservatively (60C) than the
+# spec's original 65C pending a sensors-monitored run to confirm actual
+# climb rate — see 22 July hard-power-off incident logged in checklist §8.
+# THERMAL_COOLDOWN_S is a fixed, unconditional rest applied after every
+# agent step regardless of sensor reading, on the theory that an EC/
+# firmware-level cutoff may not correlate cleanly with what thermal_zone0
+# (and therefore `sensors`) reports — a purely reactive guard could miss it.
+# ---------------------------------------------------------------------------
+
+class ThermalGuardTimeoutError(RuntimeError):
+    pass
+
+
+def _require_env_float(name: str) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        raise ValueError(
+            f"{name} is not set in .env — thermal guard config has no silent "
+            f"fallback, same as the *_TOKEN_BUDGET vars. Set it explicitly."
+        )
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise ValueError(f"{name}='{raw}' is not a valid number") from e
+
+
+def _read_cpu_package_temp_c() -> float:
+    """Parses `sensors -u` for a package-level temp. Falls back to the max
+    of all coretemp *_input readings if no explicit package sensor is
+    found (naming varies by board/kernel — e.g. 'Package id 0' vs 'Tctl').
+
+    This reads thermal_zone0-adjacent ACPI/coretemp data — NOT the EC.
+    It cannot see an EC-level hard cutoff coming; it only reduces the
+    chance of approaching one. Treat a clean reading here as reassuring,
+    not as proof the EC threshold is far away.
+    """
+    try:
+        out = subprocess.run(
+            ["sensors", "-u"], capture_output=True, text=True, timeout=5, check=True
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"Could not read sensors: {e}") from e
+
+    package_match = re.search(r"Package id 0:\s*\n\s*temp\d+_input:\s*([\d.]+)", out)
+    if package_match:
+        return float(package_match.group(1))
+
+    tctl_match = re.search(r"Tctl:\s*\n\s*temp\d+_input:\s*([\d.]+)", out)
+    if tctl_match:
+        return float(tctl_match.group(1))
+
+    core_temps = [float(v) for v in re.findall(r"temp\d+_input:\s*([\d.]+)", out)]
+    if core_temps:
+        return max(core_temps)
+
+    raise RuntimeError("No temp readings found in `sensors -u` output")
+
+
+@DBOS.step(retries_allowed=False)
+def thermal_guard_step(label: str = "") -> dict:
+    """Thin @DBOS.step() wrapper. All actual logic lives in run_thermal_guard()
+    below so it can be pytest-tested directly, without DBOS launched and
+    without real sleeps — same split as agents/*.py vs. the *_step()
+    wrappers in this file."""
+    return run_thermal_guard(
+        label=label,
+        max_c=_require_env_float("THERMAL_MAX_C"),
+        poll_s=_require_env_float("THERMAL_POLL_S"),
+        timeout_s=_require_env_float("THERMAL_TIMEOUT_S"),
+        cooldown_s=_require_env_float("THERMAL_COOLDOWN_S"),
+    )
+
+
+def run_thermal_guard(
+    label: str,
+    max_c: float,
+    poll_s: float,
+    timeout_s: float,
+    cooldown_s: float,
+    temp_reader=_read_cpu_package_temp_c,
+    sleep_fn=time.sleep,
+) -> dict:
+    """Polls temp_reader() until below max_c or timeout_s elapses, then
+    sleeps cooldown_s unconditionally. temp_reader/sleep_fn are injectable
+    so tests can simulate temperature sequences and skip real waiting."""
+    elapsed = 0.0
+    temp = temp_reader()
+    while temp >= max_c:
+        if elapsed >= timeout_s:
+            raise ThermalGuardTimeoutError(
+                f"[thermal_guard{f' ({label})' if label else ''}] still at "
+                f"{temp}\u00b0C after {timeout_s}s wait (limit {max_c}\u00b0C). "
+                f"Aborting rather than proceeding into an unknown thermal state."
+            )
+        DBOS.logger.warning(
+            f"[thermal_guard{f' ({label})' if label else ''}] {temp}\u00b0C >= "
+            f"{max_c}\u00b0C, waiting {poll_s}s..."
+        )
+        sleep_fn(poll_s)
+        elapsed += poll_s
+        temp = temp_reader()
+
+    # Unconditional rest after every step, independent of the reading above —
+    # see module note: a reactive-only guard may not catch an EC-level cutoff.
+    sleep_fn(cooldown_s)
+    return {"ok": True, "temp_c": temp, "waited_s": elapsed, "cooldown_s": cooldown_s}
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +319,7 @@ async def architecture_review_workflow(
     DBOS.logger.info("[1/5] Researcher starting (Gemma)...")
     researcher_output = researcher_step(spec_text)
     DBOS.logger.info("[1/5] Researcher done.")
+    thermal_guard_step("after Researcher")
 
     DBOS.logger.info("[2/5] Architect starting (Gemma)...")
     architect_output = architect_step(
@@ -198,6 +327,7 @@ async def architecture_review_workflow(
         researcher_output["pricing_context"],
     )
     DBOS.logger.info("[2/5] Architect done.")
+    thermal_guard_step("after Architect")
 
     # --- model swap: Gemma -> LFM happens inside llama-server here ---
     DBOS.logger.info("Model swap: Gemma -> LFM")
@@ -209,11 +339,13 @@ async def architecture_review_workflow(
     DBOS.logger.info("[3/5] Scribe starting (LFM)...")
     adr_output = await scribe_step(prior_spec, spec, scribe_blackboard)
     DBOS.logger.info("[3/5] Scribe done.")
+    thermal_guard_step("after Scribe")
 
     critic_blackboard = _summarize_for_critic(spec, ResearcherOutput.model_validate(researcher_output))
     DBOS.logger.info("[4/5] Critic starting (LFM)...")
     critic_output = await critic_step(architect_output, adr_output, critic_blackboard)
     DBOS.logger.info("[4/5] Critic done.")
+    thermal_guard_step("after Critic")
 
     # --- model swap: LFM -> Gemma happens inside llama-server here ---
     DBOS.logger.info("Model swap: LFM -> Gemma")
