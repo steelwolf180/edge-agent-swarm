@@ -360,7 +360,46 @@ async def architecture_review_workflow(
         adr_output,
         adr_count,
     )
-    DBOS.logger.info("[5/5] Judge done. Pipeline complete.")
+    DBOS.logger.info("[5/5] Judge done. Awaiting human review.")
+
+    # ------------------------------------------------------------------
+    # Human review gate (§7). Spec §3 Availability: "Human review pause:
+    # unbounded, pipeline blocks on DBOS.recv() awaiting approval signal."
+    # recv() has a bounded per-call timeout (docs default 60s), so we loop
+    # rather than pass one huge timeout. Each recv() call is its own
+    # durable step, so looping is safe across restarts/recovery — a
+    # message sent while no recv() is in-flight is queued and picked up
+    # by the next call, nothing is lost.
+    #
+    # Contract with pipeline/send_approval.py:
+    #   topic:   "review_decision"
+    #   message: {"approved": bool, "notes": str | None}
+    # ------------------------------------------------------------------
+    REVIEW_TOPIC = "review_decision"
+    REVIEW_POLL_TIMEOUT_S = 3600
+
+    decision = await DBOS.recv_async(topic=REVIEW_TOPIC, timeout_seconds=REVIEW_POLL_TIMEOUT_S)
+    while decision is None:
+        DBOS.logger.info(
+            f"No review decision after {REVIEW_POLL_TIMEOUT_S}s — still waiting "
+            f"(run pipeline/send_approval.py {DBOS.workflow_id} to unblock)."
+        )
+        decision = await DBOS.recv_async(topic=REVIEW_TOPIC, timeout_seconds=REVIEW_POLL_TIMEOUT_S)
+
+    approved = decision["approved"]
+    notes = decision.get("notes")
+    DBOS.logger.info(f"Review decision received: approved={approved} notes={notes!r}")
+
+    if approved:
+        # Persistence (adr_id, build_adr_record(), markdown writer, supersedes,
+        # PostgreSQL + artifacts/v<n>/ write) is still a separate, unresolved
+        # checklist item — not wired here.
+        DBOS.logger.info("Approved. Persistence step not yet wired (checklist §7).")
+    else:
+        # revision_notes -> blackboard, revision_cycles row: also not yet wired.
+        DBOS.logger.info("Rejected. Revision-notes persistence not yet wired (checklist §7).")
+
+    DBOS.logger.info("Pipeline complete.")
 
     return {
         "researcher": researcher_output,
@@ -368,6 +407,7 @@ async def architecture_review_workflow(
         "adr": adr_output,
         "critic": critic_output,
         "judge": judge_output,
+        "review": {"approved": approved, "notes": notes},
     }
 
 
