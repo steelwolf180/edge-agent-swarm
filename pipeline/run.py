@@ -53,6 +53,7 @@ eventually get written to Postgres/markdown in the approval-persistence step.
 """
 
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import argparse
 import asyncio
@@ -390,12 +391,16 @@ async def _run(spec_path: str, prior_spec_path: str | None, adr_count: int) -> N
         spec = json.load(f)
     prior_spec = json.load(open(prior_spec_path)) if prior_spec_path else None
 
+    start_time = datetime.now(timezone.utc)
     handle = await DBOS.start_workflow_async(
         architecture_review_workflow, spec, prior_spec, adr_count
     )
-    print(f"workflow_id: {handle.workflow_id}")
+    print(f"workflow_id: {handle.workflow_id} start={start_time.isoformat()}")
 
     result = await handle.get_result()
+    end_time = datetime.now(timezone.utc)
+    duration_s = (end_time - start_time).total_seconds()
+    print(f"workflow_id: {handle.workflow_id} end={end_time.isoformat()} duration_s={duration_s:.1f}")
     print(json.dumps(result, indent=2))
 
 
