@@ -132,7 +132,7 @@ def _call_gemma(messages: list[dict], tools: list[dict] | None = None) -> dict:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    resp = httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload, timeout=60.0)
+    resp = httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload, timeout=150.0)
     resp.raise_for_status()
     data = resp.json()
     

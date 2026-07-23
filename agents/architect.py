@@ -195,7 +195,7 @@ def call_architect(
     pricing_context: dict[str, Any],
     base_url: str = BASE_URL,
     artifacts_root: Path = ARTIFACTS_ROOT,
-    timeout: float = 120.0,
+    timeout: float = 150.0,
 ) -> ArchitectOutput:
     adrs = _load_recent_adrs(artifacts_root)
     prior_decisions_text = _format_adr_context(adrs)
