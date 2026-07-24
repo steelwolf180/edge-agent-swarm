@@ -47,6 +47,7 @@ ADR_DECISION_TRUNCATE = 200
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)", re.DOTALL)
 _SECTION_RE = re.compile(r"##\s*(Context|Decision|Consequences)\s*\n(.*?)(?=\n##|\Z)", re.DOTALL | re.IGNORECASE)
 
+ARCHITECT_HTTP_TIMEOUT_S = float(_require_env("ARCHITECT_HTTP_TIMEOUT_S"))
 
 def _parse_frontmatter(block: str) -> dict[str, Any]:
     fields: dict[str, Any] = {}
@@ -195,7 +196,7 @@ def call_architect(
     pricing_context: dict[str, Any],
     base_url: str = BASE_URL,
     artifacts_root: Path = ARTIFACTS_ROOT,
-    timeout: float = 180.0,
+    timeout: float = ARCHITECT_HTTP_TIMEOUT_S,
 ) -> ArchitectOutput:
     adrs = _load_recent_adrs(artifacts_root)
     prior_decisions_text = _format_adr_context(adrs)
