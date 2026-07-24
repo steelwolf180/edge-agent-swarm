@@ -59,6 +59,7 @@ pytestmark = [
         os.environ.get("RUN_DBOS_TESTS") != "1",
         reason="requires live DBOS/Postgres context; set RUN_DBOS_TESTS=1",
     ),
+    pytest.mark.asyncio(loop_scope="module"),
 ]
 
 
