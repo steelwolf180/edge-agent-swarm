@@ -216,7 +216,7 @@ def insert_artifact_row(
                     adr_record.context,
                     adr_record.decision,
                     adr_record.consequences,
-                    _json.dumps(judge_output.scores),
+                    _json.dumps(judge_output.model_dump(mode="json")["scores"]),
                 ),
             )
             artifact_id = cur.fetchone()[0]

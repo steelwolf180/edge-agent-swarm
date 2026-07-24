@@ -41,7 +41,7 @@ from pipeline.persistence import (
 )
 from schemas.adr import ADROutput
 from schemas.architect import ArchitectOutput, DiagramProvenance
-from schemas.judge import JudgeOutput
+from schemas.judge import JudgeOutput, MetricScore
 
 # Deliberately far outside real spec_version range, so this test's DB rows
 # and artifacts/v<n>/ folder are obviously test data.
@@ -90,21 +90,40 @@ def _stub_architect_output() -> ArchitectOutput:
             informed_by_adrs=[],
         ),
         docs="Integration test docs.",
-        components=[],
+        components=[
+            {
+                "id": "system_under_test",
+                "name": "Integration Test System",
+                "type": "internal_system",
+                "description": "Stub component for persistence.py integration test.",
+                "technology": None,
+                "redundant": False,
+            }
+        ],
     )
 
-
 def _stub_judge_output() -> JudgeOutput:
+    def _score(value: float, target: float, flag_threshold: float, direction: str) -> MetricScore:
+        return MetricScore(
+            value=value,
+            target=target,
+            flag_threshold=flag_threshold,
+            direction=direction,
+            flagged=False,
+            flag_reason=None,
+        )
+
     return JudgeOutput(
         scores={
-            "spof_count": 0.0,
-            "redundancy_ratio": 1.0,
-            "cost_per_component": 0.0,
-            "integration_coverage": 1.0,
-            "adrs_per_diff": 1.0,
+            "spof_count": _score(0.0, target=0.0, flag_threshold=1.0, direction="lower_is_better"),
+            "redundancy_ratio": _score(1.0, target=1.0, flag_threshold=0.5, direction="higher_is_better"),
+            "cost_per_component": _score(0.0, target=0.0, flag_threshold=100.0, direction="lower_is_better"),
+            "integration_coverage": _score(1.0, target=1.0, flag_threshold=0.5, direction="higher_is_better"),
+            "adrs_per_diff": _score(1.0, target=1.0, flag_threshold=1.0, direction="higher_is_better"),
         },
         cost_estimate=0.0,
-        recommendation="Integration test recommendation.",
+        recommendation="approve",
+        flagged_for_review=[],
     )
 
 
@@ -171,7 +190,7 @@ def test_approval_path_end_to_end(workflow_id, artifacts_root):
     assert db_row[1] == adr_record.context
     assert db_row[2] == adr_record.decision
     assert db_row[3] == adr_record.consequences
-    assert db_row[4] == _stub_judge_output().scores
+    assert db_row[4] == _stub_judge_output().model_dump(mode="json")["scores"]
 
     update_pipeline_run_status(workflow_id, "approved")
     with psycopg.connect(_db_url()) as conn:
