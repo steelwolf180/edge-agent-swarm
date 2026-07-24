@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import psycopg
 
 import pytest
 from dbos import DBOS, DBOSConfig
@@ -102,7 +103,15 @@ async def test_full_pipeline_reject_flow(dbos_launched):
     result = await handle.get_result()
 
     assert result["review"] == {"approved": False, "notes": "needs another SPOF pass"}
-    # NOTE: as of the current run.py, rejection only logs — it doesn't
-    # yet write revision_cycles or loop back to Critic (checklist §7
-    # open items). Once that's wired, this test should also assert on
-    # whatever it produces (a revision_cycles row, a re-run result, etc).
+
+    # persist_rejection_step (run.py) writes revision_cycles on rejection
+    # as of this session's §7 persistence wiring — confirm the row landed.
+    with psycopg.connect(os.environ["DBOS_SYSTEM_DATABASE_URL"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT revision_notes FROM revision_cycles WHERE workflow_id = %s",
+                (handle.workflow_id,),
+            )
+            row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "needs another SPOF pass"
