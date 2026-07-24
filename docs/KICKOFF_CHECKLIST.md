@@ -181,12 +181,39 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [x] Write `pipeline/send_approval.py <workflow_id> [--reject "notes"]`
 - [x] Confirm `DBOS.recv()` blocks correctly at human review
 - [x] Confirm `DBOS.send()` from CLI unblocks the workflow
-- [ ] Approval path → outputs written to PostgreSQL + `artifacts/v<n>/`
-  - [ ] Assign `adr_id` (sequence against `spec_versions`, or UUID — undecided)
-  - [ ] Call `build_adr_record()` to bridge Scribe's `ADROutput` → `ADRRecord`
-  - [ ] Serialize `ADRRecord` → `adr_<NNNN>.md` (frontmatter + Context/Decision/Consequences body) — no writer exists yet, only the `architect.py` reader
-  - [ ] Decide `supersedes` population: human-specified at approval, or inferred from spec diff — currently unresolved
-- [ ] Rejection path → `revision_notes` written to blackboard, `revision_cycles` row inserted
+- [x] Approval path → outputs written to PostgreSQL + `artifacts/v<n>/`
+  - [x] Assign `adr_id` — sequential (`adr_0001`, `adr_0002`, ...), not UUID. Matches
+    the `ADR_GLOB_PATTERN "v*/adr_*.md"` filename convention `architect.py` already
+    reads by. Implemented in `pipeline/persistence.py::_next_adr_id()`.
+  - [x] Call `build_adr_record()` to bridge Scribe's `ADROutput` → `ADRRecord`
+    (`schemas/adr.py`), invoked from `pipeline/persistence.py::persist_adr()`
+  - [x] Serialize `ADRRecord` → `adr_<NNNN>.md` (frontmatter + Context/Decision/
+    Consequences body) — writer is `pipeline/persistence.py::serialize_adr_markdown()`,
+    the inverse of `architect.py`'s `_parse_adr_markdown()`. Round-trip verified
+    against the real parser in `tests/integration/test_persistence.py`
+    (`test_approval_path_end_to_end`), not just a shape match.
+  - [x] `supersedes` population — human-specified at approval, not inferred from
+    spec diff. Passed via `send_approval.py --supersedes adr_0003,adr_0004`
+    (comma-separated adr_ids), read in `run.py`'s workflow as
+    `decision.get("supersedes")`, defaults to `[]` if omitted.
+  - [x] Postgres writes: `spec_versions` + `pipeline_runs` rows bootstrapped at
+    workflow start (`db_bootstrap_step`, before Researcher runs, so
+    `pipeline_runs.workflow_id` exists before later FK references); `artifacts`
+    row written on approval via `insert_artifact_row()`, including the new
+    `artifacts.adr_id` column (`schemas/002_add_adr_id.sql`) linking the DB row
+    back to the markdown file. `judge_scores` stores the full `MetricScore`
+    shape per metric (`value`/`target`/`flag_threshold`/`direction`/`flagged`/
+    `flag_reason`), not a flattened `{metric: float}` map.
+  - [x] Validated: `tests/smoke/test_persistence.py` (connectivity, migration
+    presence, file-write liveness) + `tests/integration/test_persistence.py`
+    (full approval/rejection round-trip against `TESTING_DATABASE_URL`,
+    idempotency under simulated DBOS step retry) — 6/6 passing.
+- [x] Rejection path → `revision_notes` written to blackboard, `revision_cycles` row
+  inserted via `persist_rejection_step` → `insert_revision_cycle_row()`. Guarded:
+  workflow raises if `notes` is empty even though `send_approval.py --reject`
+  already enforces this client-side (defense in depth against another caller
+  sending the message a different way). Asserted end-to-end in
+  `tests/integration/test_pipeline_approval.py::test_full_pipeline_reject_flow`.
 
 ---
 
