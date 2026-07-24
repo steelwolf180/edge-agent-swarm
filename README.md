@@ -4,7 +4,7 @@ Spec-driven, multi-agent architecture review pipeline that runs entirely on loca
 
 It automates the C4 diagram + Architecture Decision Record (ADR) discipline for solo developers, small teams, and solution architects, closing the gap between technical and business stakeholders. It is not a code generation tool.
 
-> Full spec: `agent_swarm_architecture_spec.docx` (v0.9)
+> Full spec: `agent_swarm_architecture_spec.docx` (v0.10)
 > Public overview: `agent_swarm_at_the_edge_public.docx`
 > Environment setup: `KICKOFF_CHECKLIST.md` — start there before this README if you're bootstrapping from scratch.
 
@@ -191,4 +191,4 @@ Rejection currently persists revision notes but does not automatically loop the 
 
 ## Status
 
-v0.9. §6 agent validation and §7 DBOS pipeline wiring (including approval/rejection persistence) complete and validated — unit-level (`tests/integration/test_persistence.py`) and full-pipeline (`tests/integration/test_pipeline_approval.py`), both passing against real inference and real Postgres. Open item: §8 End-to-End Run (see `KICKOFF_CHECKLIST.md` §8) — sustained thermal validation across a full run is the primary remaining item.
+v0.10. §6 agent validation and §7 DBOS pipeline wiring (including approval/rejection persistence) complete and validated — unit-level (`tests/integration/test_persistence.py`) and full-pipeline (`tests/integration/test_pipeline_approval.py`), both passing against real inference and real Postgres. Open item: §8 End-to-End Run (see `KICKOFF_CHECKLIST.md` §8) — sustained thermal validation across a full run is the primary remaining item.
