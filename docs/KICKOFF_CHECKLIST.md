@@ -178,9 +178,9 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   the end of the first real run. `mode="json"` fixes it at the source,
   since the same dicts get written to Postgres/markdown at approval time.
 - [x] Print `workflow_id` to terminal on pipeline start
-- [ ] Write `pipeline/send_approval.py <workflow_id> [--reject "notes"]`
-- [ ] Confirm `DBOS.recv()` blocks correctly at human review
-- [ ] Confirm `DBOS.send()` from CLI unblocks the workflow
+- [x] Write `pipeline/send_approval.py <workflow_id> [--reject "notes"]`
+- [x] Confirm `DBOS.recv()` blocks correctly at human review
+- [x] Confirm `DBOS.send()` from CLI unblocks the workflow
 - [ ] Approval path → outputs written to PostgreSQL + `artifacts/v<n>/`
   - [ ] Assign `adr_id` (sequence against `spec_versions`, or UUID — undecided)
   - [ ] Call `build_adr_record()` to bridge Scribe's `ADROutput` → `ADRRecord`
