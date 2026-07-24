@@ -128,16 +128,20 @@ Run this after starting the server and after any `models.ini` change, before bui
 
 5. **PostgreSQL** — native `apt install`, not Docker. Confirm with `pg_isready -h localhost -p 5432`.
 
-6. **DB migration** — application schema (`spec_versions`, `artifacts`, `revision_cycles`, `pipeline_runs`) is created and validated on PostgreSQL 18 (Kickoff Checklist §4, complete).
+6. **DB migration** — application schema (`spec_versions`, `artifacts`, `revision_cycles`, `pipeline_runs`) created and validated on PostgreSQL 18 (`schemas/001_app_tables.sql`), plus `artifacts.adr_id` added in `schemas/002_add_adr_id.sql` (§7). Apply both with:
+   ```bash
+   python pipeline/run_migration.py              # real DB (DBOS_SYSTEM_DATABASE_URL)
+   python pipeline/run_migration.py --target testing   # test DB (TESTING_DATABASE_URL)
+   ```
 
 7. **Run the pipeline**
-   > Approval CLI is still in progress — see `KICKOFF_CHECKLIST.md` §7. `pipeline/send_approval.py` doesn't exist yet and `DBOS.recv()`/`DBOS.send()` unblocking isn't confirmed.
    ```bash
-   python pipeline/run.py --spec path/to/spec.md
-   # prints workflow_id
-   python pipeline/send_approval.py <workflow_id>            # approve
-   python pipeline/send_approval.py <workflow_id> --reject "notes"
+   python pipeline/run.py --spec path/to/spec.json # prints workflow_id
+   python pipeline/send_approval.py <workflow_id>                                   # approve
+   python pipeline/send_approval.py <workflow_id> --supersedes adr_0003,adr_0004    # approve, superseding prior ADR(s)
+   python pipeline/send_approval.py <workflow_id> --reject "notes"                  # reject
    ```
+   On approval, the pipeline writes `artifacts/v<n>/adr_<NNNN>.md` and an `artifacts` row in PostgreSQL. On rejection, it writes a `revision_cycles` row with the required notes. **Rejection does not automatically re-run the pipeline from Critic** — re-submit a revised spec via `pipeline/run.py` to go through the pipeline again. Automatic re-run from Critic on rejection is a parked v2 improvement, not yet implemented.
 
 8. **Verify**
    - Phoenix UI at `localhost:6006` — per-agent spans (prompt, tool calls, latency, model)
@@ -146,23 +150,45 @@ Run this after starting the server and after any `models.ini` change, before bui
 
 ---
 
+## Testing
+
+```bash
+# Fast, isolated — no live services required beyond Postgres
+pytest tests/smoke/
+
+# Full round-trip against TESTING_DATABASE_URL (spec_versions/pipeline_runs/artifacts/revision_cycles + real ADR file writes)
+pytest tests/integration/test_persistence.py
+
+# Full 5-agent pipeline, real llama-server calls, both model swaps — slow (~5-6 min per run)
+RUN_DBOS_TESTS=1 pytest -v -m integration tests/integration/test_pipeline_approval.py
+```
+
+All tests run against `TESTING_DATABASE_URL`, never the real DB — enforced by an autouse fixture in `tests/conftest.py`.
+
+---
+
 ## Repo Structure
 
 ```
-agents/          agent implementations
-artifacts/v1/    approved run outputs (Mermaid diagrams, ADRs)
-eval/            eval/rubric_v1.json — versioned Judge thresholds
-schemas/         Pydantic models
-pipeline/        DBOS workflow, send_approval.py
-scripts/         start_llama_router.sh, stop_llama_router.sh
+agents/             agent implementations (researcher, architect, scribe, critic, judge)
+artifacts/v1/        approved run outputs (Mermaid diagrams, ADRs)
+eval/                eval/rubric_v1.json — versioned Judge thresholds
+schemas/             Pydantic models, 001_app_tables.sql, 002_add_adr_id.sql
+pipeline/            run.py (DBOS workflow), persistence.py, send_approval.py, run_migration.py
+scripts/             start_llama_router.sh, stop_llama_router.sh
 tests/
-  smoke/         test_llama.sh — per-model smoke test (gemma | lfm)
+  conftest.py         redirects all tests to TESTING_DATABASE_URL
+  smoke/              per-component liveness checks (test_llama.sh, test_persistence.py, ...)
+  integration/         cross-component correctness (test_persistence.py, test_pipeline_approval.py)
+    fixtures/           minimal_spec.json
 ```
 
 ## Known Limitations
 
 See spec §7 for the full list — output quality depends on input spec quality, Judge metrics are fixed-threshold with no system-type awareness, and the human-in-the-loop step depends on genuine engagement rather than rubber-stamping. Not a substitute for a senior architect on complex enterprise systems.
 
+Rejection currently persists revision notes but does not automatically loop the pipeline back to Critic — re-submission is manual (see step 7 above). Parked as a v2 improvement.
+
 ## Status
 
-v0.9. §6 agent validation complete (all five agents: Researcher, Architect, Scribe, Critic, Judge). Open item: §7 DBOS pipeline wiring (see `KICKOFF_CHECKLIST.md` §7) is the primary unblocking task.
+v0.9. §6 agent validation and §7 DBOS pipeline wiring (including approval/rejection persistence) complete and validated — unit-level (`tests/integration/test_persistence.py`) and full-pipeline (`tests/integration/test_pipeline_approval.py`), both passing against real inference and real Postgres. Open item: §8 End-to-End Run (see `KICKOFF_CHECKLIST.md` §8) — sustained thermal validation across a full run is the primary remaining item.
