@@ -34,6 +34,9 @@ import os
 import re
 
 import psycopg
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from schemas.adr import ADROutput, ADRRecord, build_adr_record
 from schemas.architect import ArchitectOutput
