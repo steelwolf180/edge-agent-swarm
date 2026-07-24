@@ -46,7 +46,7 @@ def reset_dbos():
     DBOS.destroy()
     config: DBOSConfig = {
         "name": "edge-agent-swarm-test",
-        "database_url": os.environ.get("TESTING_DATABASE_URL"),
+        "system_database_url": os.environ.get("TESTING_DATABASE_URL"),
     }
     DBOS(config=config)
     DBOS.reset_system_database()
@@ -66,7 +66,10 @@ async def _dummy_review_workflow() -> dict | None:
 
 @pytest.mark.integration
 @skip_without_live_dbos
-async def test_approval_unblocks_workflow(reset_dbos):
+async def test_approval_unblocks_workflow(reset_dbos, monkeypatch):
+    monkeypatch.setenv(
+        "DBOS_SYSTEM_DATABASE_URL", os.environ["TESTING_DATABASE_URL"]
+    )
     handle = await DBOS.start_workflow_async(_dummy_review_workflow)
     send_decision(handle.workflow_id, approved=True, notes=None)
 
@@ -77,7 +80,10 @@ async def test_approval_unblocks_workflow(reset_dbos):
 
 @pytest.mark.integration
 @skip_without_live_dbos
-async def test_rejection_carries_notes(reset_dbos):
+async def test_rejection_carries_notes(reset_dbos, monkeypatch):
+    monkeypatch.setenv(
+        "DBOS_SYSTEM_DATABASE_URL", os.environ["TESTING_DATABASE_URL"]
+    )
     handle = await DBOS.start_workflow_async(_dummy_review_workflow)
     send_decision(handle.workflow_id, approved=False, notes="needs another SPOF pass")
 
