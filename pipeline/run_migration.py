@@ -7,21 +7,25 @@ load_dotenv()
 
 DB_URL = os.environ["DBOS_SYSTEM_DATABASE_URL"]
 SCRIPT_DIR = Path(__file__).resolve().parent
-SQL_PATH = SCRIPT_DIR.parent / "schemas" / "001_app_tables.sql"
+SQL_DIR = SCRIPT_DIR.parent / "schemas"
 
 
-def run_migration(sql_path: str):
-    with open(sql_path) as f:
-        sql = f.read()
+def run_migrations(sql_dir: Path):
+    sql_paths = sorted(sql_dir.glob("*.sql"))
+    if not sql_paths:
+        print(f"No .sql files found in {sql_dir}")
+        return
+
     conn = psycopg.connect(DB_URL)
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            for path in sql_paths:
+                cur.execute(path.read_text())
+                print(f"Applied {path.name}")
         conn.commit()
-        print(f"Applied {sql_path}")
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
-    run_migration(str(SQL_PATH))
+    run_migrations(SQL_DIR)
