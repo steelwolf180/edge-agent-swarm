@@ -74,7 +74,15 @@ from agents.judge import calculate_metrics
 from agents.researcher import run_researcher
 from agents.scribe import run_scribe
 
-from schemas.adr import ADROutput
+from schemas.adr import ADROutput, ADRRecord
+from pipeline.persistence import (
+    persist_adr,
+    ensure_spec_version_row,
+    ensure_pipeline_run_row,
+    update_pipeline_run_status,
+    insert_artifact_row,
+    insert_revision_cycle_row,
+)
 from schemas.architect import ArchitectOutput
 from schemas.critic import CriticOutput
 from schemas.judge import JudgeOutput
@@ -296,6 +304,45 @@ def judge_step(
     return result.model_dump(mode="json")
 
 
+@DBOS.step()
+def db_bootstrap_step(spec: dict, spec_version: int) -> None:
+    spec_version_id = ensure_spec_version_row(spec_version, spec)
+    ensure_pipeline_run_row(DBOS.workflow_id, spec_version_id)
+
+
+@DBOS.step()
+def persist_adr_step(adr_output: dict, spec_version: int, supersedes: list[str] | None) -> dict:
+    record = persist_adr(
+        ADROutput.model_validate(adr_output),
+        spec_version=spec_version,
+        supersedes=supersedes,
+    )
+    return record.model_dump(mode="json")
+
+
+@DBOS.step()
+def persist_approval_step(
+    workflow_id: str,
+    architect_output: dict,
+    adr_record: dict,
+    judge_output: dict,
+) -> int:
+    artifact_id = insert_artifact_row(
+        workflow_id,
+        ArchitectOutput.model_validate(architect_output),
+        ADRRecord.model_validate(adr_record),
+        JudgeOutput.model_validate(judge_output),
+    )
+    update_pipeline_run_status(workflow_id, "approved")
+    return artifact_id
+
+
+@DBOS.step()
+def persist_rejection_step(workflow_id: str, revision_notes: str) -> int:
+    revision_id = insert_revision_cycle_row(workflow_id, revision_notes)
+    update_pipeline_run_status(workflow_id, "rejected")
+    return revision_id
+
 # ---------------------------------------------------------------------------
 # Workflow
 # ---------------------------------------------------------------------------
@@ -314,7 +361,8 @@ async def architecture_review_workflow(
     spec_text derivation (JSON dump of the same dict Architect receives) is
     a placeholder — see module docstring's "OPEN DESIGN QUESTION" note.
     """
-    _require_spec_version(spec)
+    spec_version = _require_spec_version(spec)
+    db_bootstrap_step(spec, spec_version)
     spec_text = json.dumps(spec, indent=2)
 
     DBOS.logger.info("[1/5] Researcher starting (Gemma)...")
@@ -391,13 +439,21 @@ async def architecture_review_workflow(
     DBOS.logger.info(f"Review decision received: approved={approved} notes={notes!r}")
 
     if approved:
-        # Persistence (adr_id, build_adr_record(), markdown writer, supersedes,
-        # PostgreSQL + artifacts/v<n>/ write) is still a separate, unresolved
-        # checklist item — not wired here.
-        DBOS.logger.info("Approved. Persistence step not yet wired (checklist §7).")
+        adr_record = persist_adr_step(adr_output, spec_version, decision.get("supersedes"))
+        artifact_id = persist_approval_step(
+            DBOS.workflow_id, architect_output, adr_record, judge_output
+        )
+        DBOS.logger.info(f"ADR written: {adr_record['adr_id']}, artifact_id={artifact_id}")
+
     else:
-        # revision_notes -> blackboard, revision_cycles row: also not yet wired.
-        DBOS.logger.info("Rejected. Revision-notes persistence not yet wired (checklist §7).")
+        if not notes:
+            raise ValueError(
+                "Rejection requires revision_notes — enforced client-side by "
+                "send_approval.py's --reject, but re-checked here since this "
+                "workflow could in principle be sent a message another way."
+            )
+        revision_id = persist_rejection_step(DBOS.workflow_id, notes)
+        DBOS.logger.info(f"revision_cycles row written: id={revision_id}")
 
     DBOS.logger.info("Pipeline complete.")
 
