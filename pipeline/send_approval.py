@@ -40,7 +40,12 @@ load_dotenv()
 REVIEW_TOPIC = "review_decision"
 
 
-def send_decision(workflow_id: str, approved: bool, notes: str | None) -> None:
+def send_decision(
+    workflow_id: str,
+    approved: bool,
+    notes: str | None,
+    supersedes: list[str] | None = None,
+) -> None:
     system_database_url = os.environ.get("DBOS_SYSTEM_DATABASE_URL")
     if not system_database_url:
         raise ValueError(
@@ -50,11 +55,12 @@ def send_decision(workflow_id: str, approved: bool, notes: str | None) -> None:
         )
 
     client = DBOSClient(system_database_url=system_database_url)
-    message = {"approved": approved, "notes": notes}
+    message = {"approved": approved, "notes": notes, "supersedes": supersedes or []}
     client.send(workflow_id, message, topic=REVIEW_TOPIC)
 
     verb = "Approved" if approved else "Rejected"
     suffix = f" notes={notes!r}" if notes else ""
+    suffix += f" supersedes={supersedes!r}" if supersedes else ""
     print(f"{verb} workflow_id={workflow_id}{suffix}")
 
 
@@ -69,6 +75,13 @@ def main() -> None:
         default=None,
         help="Reject with required revision notes. Omit this flag to approve.",
     )
+    parser.add_argument(
+        "--supersedes",
+        metavar="ADR_IDS",
+        default=None,
+        help="Comma-separated adr_ids this approval supersedes, e.g. adr_0003,adr_0004. "
+             "Approve only — ignored if combined with --reject.",
+    )
     args = parser.parse_args()
 
     if args.reject is not None:
@@ -80,7 +93,11 @@ def main() -> None:
             )
         send_decision(args.workflow_id, approved=False, notes=notes)
     else:
-        send_decision(args.workflow_id, approved=True, notes=None)
+        supersedes = (
+            [s.strip() for s in args.supersedes.split(",") if s.strip()]
+            if args.supersedes else None
+        )
+        send_decision(args.workflow_id, approved=True, notes=None, supersedes=supersedes)
 
 
 if __name__ == "__main__":
