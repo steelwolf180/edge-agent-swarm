@@ -48,7 +48,7 @@ import psycopg
 import pytest
 from dbos import DBOS, DBOSConfig
 
-from pipeline.run import architecture_review_workflow
+from pipeline.run import architecture_review_workflow, __require_env
 from pipeline.send_approval import send_decision
 
 SPEC_FIXTURE = Path(__file__).parent / "fixtures" / "minimal_spec.json"
@@ -67,7 +67,7 @@ pytestmark = [
 def dbos_launched():
     config: DBOSConfig = {
         "name": "edge-agent-swarm",
-        "system_database_url": os.environ.get("DBOS_SYSTEM_DATABASE_URL"),
+        "system_database_url": _require_env("DBOS_SYSTEM_DATABASE_URL"),
         # run.py's own instance uses 3010; use a different port here so
         # this test can run without run.py's process also being up.
         "admin_port": 3011,
