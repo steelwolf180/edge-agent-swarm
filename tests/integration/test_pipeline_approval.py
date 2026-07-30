@@ -48,7 +48,7 @@ import psycopg
 import pytest
 from dbos import DBOS, DBOSConfig
 
-from pipeline.run import architecture_review_workflow, __require_env
+from pipeline.run import architecture_review_workflow, _require_env
 from pipeline.send_approval import send_decision
 
 SPEC_FIXTURE = Path(__file__).parent / "fixtures" / "minimal_spec.json"
