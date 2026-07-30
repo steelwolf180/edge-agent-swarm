@@ -140,6 +140,17 @@ def _require_env_float(name: str) -> float:
     except ValueError as e:
         raise ValueError(f"{name}='{raw}' is not a valid number") from e
 
+def _require_env(name: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None:
+        raise ValueError(
+            f"{name} is not set — no silent fallback. A missing "
+            f"DBOS_SYSTEM_DATABASE_URL used to make DBOS silently fall back "
+            f"to a throwaway SQLite file instead of Postgres; this raises "
+            f"loudly instead. Set it explicitly (check .env is being loaded "
+            f"from the right cwd)."
+        )
+    return raw
 
 def _read_cpu_package_temp_c() -> float:
     """Parses `sensors -u` for a package-level temp. Falls back to the max
@@ -474,7 +485,7 @@ async def architecture_review_workflow(
 async def _run(spec_path: str, prior_spec_path: str | None, adr_count: int) -> None:
     config: DBOSConfig = {
         "name": "edge-agent-swarm",
-        "system_database_url": os.environ.get("DBOS_SYSTEM_DATABASE_URL"),
+        "system_database_url": _require_env("DBOS_SYSTEM_DATABASE_URL"),
         # DBOS's admin server defaults to port 3001, which mermaid-ink already
         # owns on this stack (spec §4 Integration Points). Move it off that port
         # rather than let it silently fail to bind (as it just did).
