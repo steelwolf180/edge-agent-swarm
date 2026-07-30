@@ -219,8 +219,8 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 
 ## 8. End-to-End Run
 
-- [ ] Submit one full spec through all 5 agents
-- [ ] Confirm swap sequence: Gemma → LFM → Gemma (2 swaps total)
+- [x] Submit one full spec through all 5 agents
+- [x] Confirm swap sequence: Gemma → LFM → Gemma (2 swaps total)
 - [ ] Confirm full run completes within 5-minute target, `--threads 4` powersave
 - [ ] Run sustained thermal check across the *whole* pipeline (not just
   per-agent — this hasn't been validated end-to-end yet). **Note (22 July
