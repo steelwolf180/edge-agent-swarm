@@ -183,8 +183,28 @@ _STATEMENT_START_RE = re.compile(
 def _normalize_diagram_linebreaks(diagram: str) -> str:
     return _STATEMENT_START_RE.sub("\n    ", diagram)
 
+_DECLARED_ID_RE = re.compile(
+    r"\b(?:Person|System|System_Ext|SystemDb|SystemDb_Ext|SystemQueue|SystemQueue_Ext|Container|Boundary|System_Boundary|Enterprise_Boundary)\w*\(\s*([A-Za-z0-9_]+)"
+)
+_REL_RE = re.compile(r"\bRel\w*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)")
+
+def _validate_diagram_ids(diagram: str) -> None:
+    declared = set(_DECLARED_ID_RE.findall(diagram))
+    undefined = set()
+    for src, dst in _REL_RE.findall(diagram):
+        if src not in declared:
+            undefined.add(src)
+        if dst not in declared:
+            undefined.add(dst)
+    if undefined:
+        raise ValueError(
+            f"Architect: diagram has Rel(...) referencing undeclared element id(s): "
+            f"{sorted(undefined)}. Declared ids: {sorted(declared)}"
+        )
+
 def parse_model_sections(raw: str) -> dict[str, Any]:
     context_diagram = _normalize_diagram_linebreaks(_extract_section(raw, "---DIAGRAM---", "---DOCS---"))
+    _validate_diagram_ids(context_diagram)
     docs = _extract_section(raw, "---DOCS---", "---COMPONENTS---")
     components_raw = _extract_section(raw, "---COMPONENTS---", "---END---")
 
