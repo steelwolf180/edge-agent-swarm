@@ -227,7 +227,7 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [x] Submit one full spec through all 5 agents
 - [x] Confirm swap sequence: Gemma → LFM → Gemma (2 swaps total)
 - [ ] Confirm full run completes within 5-minute target, `--threads 4` powersave
-- [ ] Run sustained thermal check across the *whole* pipeline (not just
+- [x] Run sustained thermal check across the *whole* pipeline (not just
   per-agent — this hasn't been validated end-to-end yet). **Note (22 July
   2026):** one full pipeline run ended in a hard power-off (black screen,
   no backlight, required power button) with no corresponding journald
@@ -238,7 +238,7 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   EC/firmware-level thermal cutoff below what `thermal_zone0` reports —
   not yet confirmed. This is the primary reason the thermal-guard-as-step
   item above is treated as higher priority than checklist ordering implies.
-- [ ] Approve via CLI → confirm artifacts written
+- [x] Approve via CLI → confirm artifacts written
 - [ ] Run a second spec with a deliberate change → confirm ADR triggered by diff
 
 ---
