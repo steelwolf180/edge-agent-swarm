@@ -56,9 +56,20 @@ clear_pending_workflows() {
   fi
 }
 
+# THERMAL_MONITOR_PID is unset until the monitor is actually started further
+# down — guarded so this is a no-op if we exit during preflight, before the
+# monitor ever launches.
+stop_thermal_monitor() {
+  if [ -n "${THERMAL_MONITOR_PID:-}" ]; then
+    echo "[cleanup] Stopping thermal monitor (pid $THERMAL_MONITOR_PID)..."
+    kill "$THERMAL_MONITOR_PID" 2>/dev/null
+  fi
+}
+
 # Runs on normal exit, Ctrl-C, or script error — NOT on SIGKILL/hard crash.
-# See CAVEAT above.
-trap clear_pending_workflows EXIT
+# See CAVEAT above. Monitor stop runs first so cleanup doesn't leave a
+# dangling background process even if the Postgres cleanup below fails.
+trap 'stop_thermal_monitor; clear_pending_workflows' EXIT
 
 clear_pending_workflows
 
@@ -145,6 +156,16 @@ if ! curl -sf http://localhost:8080/v1/models > /dev/null; then
   echo "ERROR: llama-server not responding on :8080." >&2
   echo "        Start it: ./scripts/start_llama_router.sh" >&2
   exit 1
+fi
+
+THERMAL_MONITOR_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/thermal_monitor.sh"
+if [ -x "$THERMAL_MONITOR_SCRIPT" ]; then
+  echo "[run] Starting continuous thermal monitor..."
+  "$THERMAL_MONITOR_SCRIPT" &
+  THERMAL_MONITOR_PID=$!
+else
+  echo "[run] WARNING: thermal_monitor.sh not found or not executable at $THERMAL_MONITOR_SCRIPT" >&2
+  echo "[run]          — proceeding without continuous monitoring." >&2
 fi
 
 echo "[run] Starting pipeline..."
