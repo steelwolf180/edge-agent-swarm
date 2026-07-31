@@ -66,10 +66,20 @@ stop_thermal_monitor() {
   fi
 }
 
+# ORIGINAL_NO_TURBO is unset until we actually read/change it further down —
+# guarded so this is a no-op if we exit before that point.
+restore_turbo_state() {
+  if [ -n "${ORIGINAL_NO_TURBO:-}" ]; then
+    echo "[cleanup] Restoring no_turbo to original value (${ORIGINAL_NO_TURBO})..."
+    echo "$ORIGINAL_NO_TURBO" | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo > /dev/null 2>&1 \
+      || echo "[cleanup] WARNING: could not restore no_turbo — check manually: cat /sys/devices/system/cpu/intel_pstate/no_turbo" >&2
+  fi
+}
+
 # Runs on normal exit, Ctrl-C, or script error — NOT on SIGKILL/hard crash.
-# See CAVEAT above. Monitor stop runs first so cleanup doesn't leave a
-# dangling background process even if the Postgres cleanup below fails.
-trap 'stop_thermal_monitor; clear_pending_workflows' EXIT
+# See CAVEAT above. Order matters: turbo restore and monitor stop both run
+# before Postgres cleanup, so neither is skipped if the psql call fails.
+trap 'restore_turbo_state; stop_thermal_monitor; clear_pending_workflows' EXIT
 
 clear_pending_workflows
 
@@ -156,6 +166,22 @@ if ! curl -sf http://localhost:8080/v1/models > /dev/null; then
   echo "ERROR: llama-server not responding on :8080." >&2
   echo "        Start it: ./scripts/start_llama_router.sh" >&2
   exit 1
+fi
+
+NO_TURBO_PATH="/sys/devices/system/cpu/intel_pstate/no_turbo"
+if [ -f "$NO_TURBO_PATH" ]; then
+  ORIGINAL_NO_TURBO="$(cat "$NO_TURBO_PATH" 2>/dev/null || echo "")"
+  if [ -n "$ORIGINAL_NO_TURBO" ]; then
+    echo "[preflight] Disabling turbo boost (no_turbo: ${ORIGINAL_NO_TURBO} -> 1)..."
+    if ! echo 1 | sudo tee "$NO_TURBO_PATH" > /dev/null 2>&1; then
+      echo "[preflight] WARNING: could not set no_turbo (sudo failed?) — proceeding at default clocks." >&2
+      ORIGINAL_NO_TURBO=""
+    fi
+  else
+    echo "[preflight] WARNING: could not read $NO_TURBO_PATH — proceeding at default clocks." >&2
+  fi
+else
+  echo "[preflight] WARNING: $NO_TURBO_PATH not found (non-Intel or non-pstate driver?) — proceeding at default clocks." >&2
 fi
 
 THERMAL_MONITOR_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/thermal_monitor.sh"
