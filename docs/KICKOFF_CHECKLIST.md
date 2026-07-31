@@ -214,7 +214,12 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   already enforces this client-side (defense in depth against another caller
   sending the message a different way). Asserted end-to-end in
   `tests/integration/test_pipeline_approval.py::test_full_pipeline_reject_flow`.
-
+- [x] `validate_diagram_renders_step()` wired after Architect, before human
+  review — catches malformed Mermaid (e.g. adr_0002's unclosed
+  System_boundary()) before DBOS.recv(). Smoke-tested against fake
+  http_get (tests/smoke/test_diagram_render.py, 4/4 passing, no real
+  mermaid.ink call).
+  
 ---
 
 ## 8. End-to-End Run
