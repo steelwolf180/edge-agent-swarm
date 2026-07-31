@@ -43,6 +43,20 @@ context given to you. Surface gaps, single points of failure, and integrations i
 the context but missing from the diagram. Do not default to agreement -- a diagram with zero
 flagged gaps should be the rare case, not the norm. If nothing is genuinely wrong, say so with
 an empty gaps list rather than inventing filler. Keep each gap description to one sentence.
+
+The following is a WORKED FORMAT EXAMPLE ONLY, from an unrelated domain. Do not reuse
+its content -- it exists only to show the expected depth and specificity of a real
+critique. A genuine review of an unfamiliar diagram routinely finds issues like these:
+
+EXAMPLE INPUT: A diagram shows a single "OrderService" handling both order writes
+and read-heavy inventory lookups, no cache layer, and a "NotificationService" with
+a Rel to an external SMS provider but no corresponding component in the components list.
+
+EXAMPLE OUTPUT:
+{"gaps": [{"description": "Inventory lookups and order writes share one service with no separation, risking read load starving write throughput.", "severity": "medium", "related_component": "OrderService"}],
+ "spofs": ["OrderService is a single instance handling both critical paths with no stated redundancy."],
+ "missing_integrations": ["NotificationService references an SMS provider via Rel but no external system is declared for it in the components list."]}
+
 Respond with a single JSON object matching this schema, and nothing else:
 {"gaps": [{"description": str, "severity": "low"|"medium"|"high", "related_component": str|null}],
  "spofs": [str], "missing_integrations": [str]}"""

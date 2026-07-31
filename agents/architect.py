@@ -129,20 +129,29 @@ markers on their own line. Do not add any text before ---DIAGRAM--- or
 after the closing ---END---. Do not include any provenance, timestamps,
 or metadata — those are handled outside the model.
 
+The following is a WORKED FORMAT EXAMPLE ONLY. Do not reuse its entity
+names, domain, or relationships — the actual diagram must be built
+entirely from the SPEC provided by the user below. The example exists
+only to show required structure and completeness.
+
 ---DIAGRAM---
 C4Context
-    title <short diagram title>
-    Person(customer, "Customer", "Uses the system")
-    System(webapp, "Web App", "Handles requests")
-    System_Ext(payments, "Payment Gateway", "Processes payments")
-    Rel(customer, webapp, "Uses")
-    Rel(webapp, payments, "Calls")
-Each Person, System, System_Ext, Rel, and boundary statement MUST be on its own line. Never place two statements on the same line.
+    title Library Book Reservation System Context
+    Person(patron, "Library Patron", "Searches and reserves books")
+    System(catalog, "Reservation System", "Manages holds and due dates")
+    System_Ext(sms, "SMS Gateway", "Sends pickup notifications")
+    Rel(patron, catalog, "Places holds")
+    Rel(catalog, sms, "Sends notification on availability")
 ---DOCS---
-<2-4 sentences of plain prose explaining the diagram>
+This diagram shows the Library Reservation System's context. Patrons place holds through the system, which notifies them via SMS when a reserved book becomes available.
 ---COMPONENTS---
-<JSON array of objects with keys: id, name, type (person|internal_system|external_system), description, technology (nullable), redundant (bool)>
+[{"id": "patron", "name": "Library Patron", "type": "person", "description": "Searches and reserves books", "technology": null, "redundant": false}, {"id": "catalog", "name": "Reservation System", "type": "internal_system", "description": "Manages holds and due dates", "technology": null, "redundant": false}, {"id": "sms", "name": "SMS Gateway", "type": "external_system", "description": "Sends pickup notifications", "technology": null, "redundant": false}]
 ---END---
+
+Always produce all three sections for the actual spec given below — never
+stop after ---DIAGRAM---. Each Person, System, System_Ext, Rel, and
+boundary statement MUST be on its own line. Never place two statements
+on the same line.
 """
 
 
@@ -250,10 +259,8 @@ def call_architect(
             f"Partial output: {raw_text[:300]}"
         )
     
-    if choice.get("finish_reason") == "length":
-        raise ValueError(...)
-    
     if os.environ.get("ARCHITECT_DEBUG_RAW") == "1":
+        print(f"ARCHITECT finish_reason={choice.get('finish_reason')!r}")
         print(f"ARCHITECT RAW OUTPUT:\n{raw_text!r}")
     
     sections = parse_model_sections(raw_text)
