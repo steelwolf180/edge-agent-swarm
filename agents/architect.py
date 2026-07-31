@@ -132,9 +132,12 @@ or metadata — those are handled outside the model.
 ---DIAGRAM---
 C4Context
     title <short diagram title>
-    Person(...)
-    System(...)
-    Rel(...)
+    Person(customer, "Customer", "Uses the system")
+    System(webapp, "Web App", "Handles requests")
+    System_Ext(payments, "Payment Gateway", "Processes payments")
+    Rel(customer, webapp, "Uses")
+    Rel(webapp, payments, "Calls")
+Each Person, System, System_Ext, Rel, and boundary statement MUST be on its own line. Never place two statements on the same line.
 ---DOCS---
 <2-4 sentences of plain prose explaining the diagram>
 ---COMPONENTS---
@@ -173,9 +176,15 @@ def _extract_section(raw: str, start_marker: str, end_marker: str) -> str:
         raise ValueError(f"Could not find section between {start_marker!r} and {end_marker!r}")
     return match.group(1).strip()
 
+_STATEMENT_START_RE = re.compile(
+    r"(?<!\n)\s+(?=(Person|System|Rel|System_Boundary|Enterprise_Boundary|SystemDb|SystemQueue)\()"
+)
+
+def _normalize_diagram_linebreaks(diagram: str) -> str:
+    return _STATEMENT_START_RE.sub("\n    ", diagram)
 
 def parse_model_sections(raw: str) -> dict[str, Any]:
-    context_diagram = _extract_section(raw, "---DIAGRAM---", "---DOCS---")
+    context_diagram = _normalize_diagram_linebreaks(_extract_section(raw, "---DIAGRAM---", "---DOCS---"))
     docs = _extract_section(raw, "---DOCS---", "---COMPONENTS---")
     components_raw = _extract_section(raw, "---COMPONENTS---", "---END---")
 
@@ -220,6 +229,12 @@ def call_architect(
             f"Raise ARCHITECT_TOKEN_BUDGET or shorten the prompt. "
             f"Partial output: {raw_text[:300]}"
         )
+    
+    if choice.get("finish_reason") == "length":
+        raise ValueError(...)
+    
+    if os.environ.get("ARCHITECT_DEBUG_RAW") == "1":
+        print(f"ARCHITECT RAW OUTPUT:\n{raw_text!r}")
     
     sections = parse_model_sections(raw_text)
 
