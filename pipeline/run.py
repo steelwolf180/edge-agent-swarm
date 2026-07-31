@@ -184,6 +184,57 @@ def _read_cpu_package_temp_c() -> float:
     raise RuntimeError("No temp readings found in `sensors -u` output")
 
 
+# ---------------------------------------------------------------------------
+# DIAGRAM RENDER VALIDATION — added post adr_0002 incident (31 Jul 2026).
+# Architect's Mermaid C4Context output can be syntactically invalid (e.g. a
+# malformed System_boundary() call) with nothing catching it before human
+# review. This mirrors the finish_reason == "length" pattern already used
+# in agents/*.py: fail loud at the source step instead of letting a bad
+# output reach DBOS.recv() unvalidated. Split into a plain function +
+# @DBOS.step() wrapper for the same reason as run_thermal_guard(): testable
+# with an injected http client, no DBOS launch required.
+# ---------------------------------------------------------------------------
+
+class DiagramRenderError(RuntimeError):
+    pass
+
+
+def render_mermaid_diagram(
+    context_diagram: str,
+    mermaid_ink_url: str | None = None,
+    timeout_s: float = 10.0,
+    http_get=None,
+) -> dict:
+    """POSTs (via GET, per mermaid.ink's own URL-safe-base64 endpoint
+    convention — see KICKOFF_CHECKLIST.md §3) the diagram source and
+    raises DiagramRenderError if the response isn't image bytes. A
+    lexer/parse error comes back as a 200 with a text/plain body
+    ('Lexical error on line N...'), not a 4xx/5xx, so status code alone
+    doesn't catch this — content-type must be checked explicitly."""
+    import base64
+    import httpx
+
+    url = mermaid_ink_url or _require_env("MERMAID_INK_URL")
+    b64 = base64.urlsafe_b64encode(context_diagram.encode()).decode().rstrip("=")
+
+    getter = http_get or httpx.get
+    resp = getter(f"{url}/img/{b64}", timeout=timeout_s)
+
+    content_type = resp.headers.get("content-type", "")
+    if not content_type.startswith("image/"):
+        raise DiagramRenderError(
+            f"Architect: Mermaid diagram failed to render via mermaid.ink "
+            f"(content-type={content_type!r}, status={resp.status_code}). "
+            f"Response: {resp.text[:300]!r}"
+        )
+    return {"ok": True, "content_type": content_type, "bytes": len(resp.content)}
+
+
+@DBOS.step(retries_allowed=False)
+def validate_diagram_renders_step(context_diagram: str) -> dict:
+    return render_mermaid_diagram(context_diagram)
+
+
 @DBOS.step(retries_allowed=False)
 def thermal_guard_step(label: str = "") -> dict:
     """Thin @DBOS.step() wrapper. All actual logic lives in run_thermal_guard()
@@ -387,6 +438,7 @@ async def architecture_review_workflow(
         researcher_output["pricing_context"],
     )
     DBOS.logger.info("[2/5] Architect done.")
+    validate_diagram_renders_step(architect_output["context_diagram"])
     thermal_guard_step("after Architect")
 
     # --- model swap: Gemma -> LFM happens inside llama-server here ---
