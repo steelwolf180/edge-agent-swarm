@@ -235,6 +235,17 @@ def validate_diagram_renders_step(context_diagram: str) -> dict:
     return render_mermaid_diagram(context_diagram)
 
 
+@DBOS.step()
+def capture_timestamp_step() -> float:
+    """Reading the clock is non-deterministic, so it gets its own step —
+    same reasoning as thermal_guard_step below. Used to split the
+    workflow's total duration into compute time (Researcher..Judge) vs.
+    approval wait time (DBOS.recv()), since §8's 5-minute target is
+    against compute time only. Returns a Unix epoch float rather than a
+    datetime so downstream arithmetic doesn't need re-parsing."""
+    return time.time()
+
+
 @DBOS.step(retries_allowed=False)
 def thermal_guard_step(label: str = "") -> dict:
     """Thin @DBOS.step() wrapper. All actual logic lives in run_thermal_guard()
@@ -424,6 +435,7 @@ async def architecture_review_workflow(
     a placeholder — see module docstring's "OPEN DESIGN QUESTION" note.
     """
     spec_version = _require_spec_version(spec)
+    compute_start_time = capture_timestamp_step()
     db_bootstrap_step(spec, spec_version)
     spec_text = json.dumps(spec, indent=2)
 
@@ -472,6 +484,7 @@ async def architecture_review_workflow(
         adr_count,
     )
     DBOS.logger.info("[5/5] Judge done. Awaiting human review.")
+    compute_end_time = capture_timestamp_step()
 
     # ------------------------------------------------------------------
     # Human review gate (§7). Spec §3 Availability: "Human review pause:
@@ -497,9 +510,21 @@ async def architecture_review_workflow(
         )
         decision = await DBOS.recv_async(topic=REVIEW_TOPIC, timeout_seconds=REVIEW_POLL_TIMEOUT_S)
 
+    approval_end_time = capture_timestamp_step()
     approved = decision["approved"]
     notes = decision.get("notes")
     DBOS.logger.info(f"Review decision received: approved={approved} notes={notes!r}")
+
+    # compute_duration_s is the number the §8 5-minute target is actually
+    # measured against — Researcher through Judge, excluding human wait.
+    # approval_wait_s is tracked separately so it's never silently folded
+    # back into "duration" by a future refactor.
+    compute_duration_s = compute_end_time - compute_start_time
+    approval_wait_s = approval_end_time - compute_end_time
+    DBOS.logger.info(
+        f"Timing: compute_duration_s={compute_duration_s:.1f} "
+        f"approval_wait_s={approval_wait_s:.1f}"
+    )
 
     if approved:
         adr_record = persist_adr_step(adr_output, spec_version, decision.get("supersedes"))
@@ -527,6 +552,10 @@ async def architecture_review_workflow(
         "critic": critic_output,
         "judge": judge_output,
         "review": {"approved": approved, "notes": notes},
+        "timing": {
+            "compute_duration_s": compute_duration_s,
+            "approval_wait_s": approval_wait_s,
+        },
     }
 
 
@@ -559,7 +588,15 @@ async def _run(spec_path: str, prior_spec_path: str | None, adr_count: int) -> N
     result = await handle.get_result()
     end_time = datetime.now(timezone.utc)
     duration_s = (end_time - start_time).total_seconds()
-    print(f"workflow_id: {handle.workflow_id} end={end_time.isoformat()} duration_s={duration_s:.1f}")
+    timing = result.get("timing", {})
+    compute_duration_s = timing.get("compute_duration_s")
+    approval_wait_s = timing.get("approval_wait_s")
+    print(
+        f"workflow_id: {handle.workflow_id} end={end_time.isoformat()} "
+        f"duration_s={duration_s:.1f} "
+        f"compute_duration_s={compute_duration_s:.1f} "
+        f"approval_wait_s={approval_wait_s:.1f}"
+    )
     print(json.dumps(result, indent=2))
 
 
