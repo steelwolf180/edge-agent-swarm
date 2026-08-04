@@ -1,0 +1,73 @@
+{
+  "spec_version": 2,
+  "project_overview": {
+    "purpose": "Mid-size e-commerce backend supporting product catalog, cart, checkout, and order fulfillment for a single-region online retailer",
+    "target_users": "Retail customers (web + mobile checkout), internal ops staff (order management), external logistics partners (fulfillment status updates)",
+    "deployment_environment": "Cloud, single AWS region (us-east-1), containerized services on ECS"
+  },
+  "functional_requirements": {
+    "core_features": [
+      "Catalog Service (Node.js, PostgreSQL): manages product listings, pricing, and category data; maintains its own read-optimized cache of product data for fast page loads",
+      "Search Service (Python, Elasticsearch): provides full-text product search; maintains an independent local cache of product data synced from Catalog Service on a best-effort basis, with no defined consistency guarantee between the two caches",
+      "Cart Service (Node.js, Redis): manages active shopping carts per customer session",
+      "Checkout Service (Node.js): orchestrates checkout flow, validates cart contents, calculates totals and tax",
+      "Payment Service (Node.js, Stripe API): calls out to Stripe to process card payments; payment initiation is a single outbound HTTP call to Stripe's charge endpoint at checkout time",
+      "Order Service (Node.js, PostgreSQL): creates and tracks orders; maintains its own denormalized copy of product data (name, price, image URL) at order-creation time, refreshed independently of Catalog Service",
+      "Inventory Service (Java, PostgreSQL): tracks stock levels across two warehouses, decrements stock on order confirmation",
+      "Fulfillment Service (Python, ShipStation API): sends fulfillment requests to ShipStation and receives shipping status webhooks",
+      "Notification Service (Node.js, SendGrid API, Twilio API): sends order confirmation and shipping update emails/SMS",
+      "Admin Dashboard (React, internal REST API): internal web UI for ops staff to review orders, manage inventory overrides, and issue refunds"
+    ],
+    "key_user_flows": [
+      "Customer browses catalog via Catalog/Search Services -> adds items to Cart Service -> checks out via Checkout Service -> Payment Service charges via Stripe -> Order Service creates order -> Inventory Service decrements stock -> customer receives order confirmation",
+      "Ops staff uses Admin Dashboard to review pending orders -> allocates inventory via Inventory Service -> triggers fulfillment via Fulfillment Service",
+      "Fulfillment Service sends request to ShipStation -> ShipStation webhook updates shipping status -> Notification Service alerts customer via SendGrid/Twilio"
+    ],
+    "integration_points": [
+      "Stripe (payment gateway)",
+      "ShipStation (logistics/fulfillment partner API)",
+      "Twilio (SMS notifications)",
+      "SendGrid (email notifications)",
+      "Elasticsearch (product search index)"
+    ]
+  },
+  "non_functional_requirements": {
+    "performance": "Checkout flow must complete in under 3 seconds end-to-end under normal load; catalog page loads under 500ms",
+    "scalability": "Must support Black Friday-level traffic spikes (~10x baseline) without manual intervention",
+    "availability": "Target 99.9% uptime for checkout path; catalog browsing can tolerate brief degradation",
+    "security": "PCI compliance required for payment flow; customer PII (name, address, email, phone) stored and must be protected at rest and in transit",
+    "observability": "Centralized logging and tracing across all services; alerting on checkout failure rate and payment gateway errors"
+  },
+  "technical_constraints": {
+    "language_framework": [
+      "Node.js",
+      "Python",
+      "Java",
+      "React"
+    ],
+    "existing_systems": [
+      "AWS ECS",
+      "PostgreSQL \u2014 single instance in us-east-1a with a read replica in us-east-1b for failover, backs both Catalog Service and Order Service",
+      "Redis",
+      "Elasticsearch"
+    ],
+    "budget_infra_limits": "Single-region deployment for MVP launch; multi-region is a post-launch consideration",
+    "team_skillset": "Small backend team (4 engineers), comfortable with Node.js and Python, limited Java experience"
+  },
+  "data_architecture": {
+    "data_sources": [
+      "Customer-submitted account and checkout data",
+      "Product catalog data (internally managed)",
+      "Stripe payment webhooks",
+      "ShipStation fulfillment webhooks"
+    ],
+    "storage_requirements": "PostgreSQL for transactional data (catalog, orders, inventory) on a single instance with no replica; Redis for cart/session state; Elasticsearch for search index. Product data is independently cached or denormalized in three places (Catalog Service, Search Service, Order Service) with no single source of truth defined.",
+    "data_flow": "Customer -> Cart Service -> Checkout Service -> Payment Service (single outbound call to Stripe charge endpoint, no documented retry or idempotency handling on failure) -> Order Service -> Inventory Service -> Fulfillment Service (ShipStation) -> Notification Service",
+    "retention_compliance": "PCI-relevant payment data not stored directly (delegated to Stripe); customer PII retained per standard e-commerce retention policy, no formal compliance framework defined yet"
+  },
+  "open_questions": [
+    "Should product data be centralized in a single source of truth service rather than duplicated across Catalog, Search, and Order services?",
+    "What is the failover plan if the single-instance PostgreSQL primary becomes unavailable?",
+    "Does Payment Service need retry/idempotency handling for the Stripe charge call, given network failures at checkout are user-facing and financially sensitive?"
+  ]
+}
