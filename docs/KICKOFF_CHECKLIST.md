@@ -226,7 +226,18 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 
 - [x] Submit one full spec through all 5 agents
 - [x] Confirm swap sequence: Gemma → LFM → Gemma (2 swaps total)
-- [ ] Confirm full run completes within 5-minute target, `--threads 4` powersave
+- [ ] Confirm full run completes within 5-minute target, `--threads 4` powersave.
+  **Measured, not estimated (4 Aug 2026):** `duration_s` conflation bug fixed —
+  `run.py` now checkpoints `compute_duration_s` separately from
+  `approval_wait_s` via `capture_timestamp_step()`. First clean run
+  (workflow `7005e756-9d7c-4e02-9bfe-927e66d211a2`, stress-test spec):
+  `compute_duration_s=708.9s` (~11.8 min) — genuinely failing the target,
+  not a contaminated number. Per-agent breakdown from run.py log
+  timestamps: Researcher ~230s, Architect ~344s, Scribe ~34s, Critic
+  ~37s, Judge instant (calculator only). Researcher + Architect (both
+  Gemma) account for ~81% of total compute time. Open question: is
+  5 minutes a realistic target for this model/hardware combination, or
+  does the target itself need revisiting — not yet decided.
 - [x] Run sustained thermal check across the *whole* pipeline (not just
   per-agent — this hasn't been validated end-to-end yet). **Note (22 July
   2026):** one full pipeline run ended in a hard power-off (black screen,
@@ -238,8 +249,47 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   EC/firmware-level thermal cutoff below what `thermal_zone0` reports —
   not yet confirmed. This is the primary reason the thermal-guard-as-step
   item above is treated as higher priority than checklist ordering implies.
-- [x] Approve via CLI → confirm artifacts written
+- [x] Approve via CLI → confirm artifacts written.
+  **Reconfirmed (4 Aug 2026):** workflow `7005e756-9d7c-4e02-9bfe-927e66d211a2`
+  approved via CLI, `adr_0003.md` written to `artifacts/v1/`, `artifact_id=5`
+  persisted to Postgres. Thermal data point from the same run: peaked at
+  64.0°C, ~19% of the run spent at/above the 60°C guard threshold,
+  `no_turbo=1` held throughout, no OOM/crash.
 - [ ] Run a second spec with a deliberate change → confirm ADR triggered by diff
+
+**Bugs found and fixed during §8 stress-testing (4 Aug 2026), not on the original checklist:**
+- `agents/researcher.py` — hardcoded `timeout=150.0` on the Gemma HTTP call
+  was too tight and caused a real `httpx.ReadTimeout` crash under load.
+  Fixed: now reads `RESEARCHER_HTTP_TIMEOUT_S` from `.env` (set to 600,
+  matching Architect's existing pattern), no silent fallback.
+- `agents/architect.py` — two separate runs failed on `_validate_diagram_ids()`
+  catching a `Rel(...)` referencing an undeclared element (`notification_service`,
+  then `admin_dashboard` — both cases where the entity was correctly present
+  in `COMPONENTS` but missing its diagram declaration line). Added an explicit
+  declare-before-reference self-consistency instruction to `SYSTEM_PROMPT`.
+  Held clean on the next run, but sample size is still too small (1 run
+  post-fix) to call this confirmed — could also be diagram-complexity
+  variance, since that run produced a coarser decomposition than the
+  earlier failures.
+- `pipeline/run.py` — `architect_step` given `retries_allowed=True,
+  max_attempts=3` as a safety net, independent of whether the prompt fix
+  holds.
+- `agents/critic.py` — added an explicit "at most 5 gaps / 3 SPOFs / 3
+  missing integrations" cap to `CRITIC_SYSTEM_PROMPT`. Deliberately left
+  `CRITIC_TOKEN_BUDGET` at 4096 (not bumped) to isolate whether the prompt
+  instruction alone is sufficient. First clean-run result: gaps=3 (✓),
+  spofs=2 (✓), missing_integrations=5 (cap not respected, but did not
+  truncate/crash). Also the first run to return non-empty, substantive
+  Critic output grounded in real components — relevant to the Critic
+  empty-gaps investigation (Week 1 priority per completion plan), though
+  not yet enough runs to call that bug closed.
+- Evaluated swapping Gemma (Researcher/Architect/Judge) for a Liquid model
+  to cut compute time. Ruled out LFM2.5-8B-A1B: llama.cpp tool-calling is
+  currently broken for its MoE architecture (open upstream issue), which
+  disqualifies it for Researcher/Judge specifically. LFM2-2.6B remains a
+  narrower, unverified option (Architect only, since it has no tool calls)
+  — not pursued yet, would confound the in-progress Architect consistency
+  investigation above if tested now.
 
 ---
 
