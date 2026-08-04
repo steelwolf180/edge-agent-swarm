@@ -31,13 +31,15 @@ CRITICAL GROUNDING RULE: Your "decision", "consequences", and "diff_summary" fie
 describe ONLY the specific change shown in the "Spec diff" section below. Do not invent,
 assume, or generalize to a larger architectural decision. Do not discuss data centralization,
 service consolidation, or any other topic unless that exact topic appears in the diff text
-you were given. If the diff is a single small change (e.g. one infrastructure detail), your
-ADR must be correspondingly narrow and specific to that one change -- not a broader redesign.
+you were given.
 
-Before writing, re-read the "Spec diff" section and identify the exact field path and the
-exact old_value/new_value shown. Your decision must directly reference what changed, in
-concrete terms (which field, old state, new state) -- not a paraphrase of a generic
-architectural theme.
+FORMATTING RULES (all fields):
+- Never copy or quote the "Spec diff" or "Blackboard context" text verbatim into any field.
+  Paraphrase concisely, in your own words, in 1-2 sentences per field.
+- "context" must always be exactly the short fixed label: "L1 System Context". Do not put
+  any other content in this field.
+- "decision" and "consequences" must each be 1-2 sentences, specific to the one change in
+  the diff -- not a summary of the entire architecture or blackboard context.
 
 Respond with a single JSON object matching this schema, and nothing else:
 {"context": str, "decision": str, "consequences": str, "diff_summary": str, "affected_diagrams": ["context"]}
