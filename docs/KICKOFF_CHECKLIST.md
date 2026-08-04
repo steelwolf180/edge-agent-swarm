@@ -255,7 +255,28 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   persisted to Postgres. Thermal data point from the same run: peaked at
   64.0°C, ~19% of the run spent at/above the 60°C guard threshold,
   `no_turbo=1` held throughout, no OOM/crash.
-- [ ] Run a second spec with a deliberate change → confirm ADR triggered by diff
+- [x] Run a second spec with a deliberate change → confirm ADR triggered by diff
+  **Confirmed (4 Aug 2026):** deepdiff/hunk-counting mechanism validated across
+  4 runs against spec_v2.json (single deliberate change: PostgreSQL read replica
+  added to technical_constraints.existing_systems). diff_hunk_count=1 correctly
+  computed each time; diff_summary (code-generated, not LLM output) correctly
+  and specifically names the changed field/values every run.
+  
+  **Known limitation surfaced, not yet resolved:** Scribe's LLM-generated ADR
+  content (decision/consequences/diff_summary's prose) does NOT reliably ground
+  on the actual diff. 3 runs against the identical clean diff produced 3 different
+  fabricated decisions (Elasticsearch centralization; generic data-source
+  centralization near-verbatim matching spec's own open_questions[0]; Catalog/
+  Search service duplication) — none referencing the real PostgreSQL/replica
+  change. Ruled out: context leakage (blackboard_context and diff_summary
+  independently verified clean). Ruled out: prompt-adherence (2 distinct
+  system-prompt fixes attempted — explicit grounding/re-read instruction,
+  then format/length constraints — neither improved content grounding, though
+  the second did fix an unrelated context-field format regression). Verdict:
+  capability ceiling at LFM2.5-VL-1.6B, same root cause as Critic empty-gaps
+  investigation below, different symptom (fabrication vs. omission). Logged as
+  known limitation (spec §7); model swap for Scribe/Critic remains parked v2,
+  not pursued now (see Parking Lot).
 
 **Bugs found and fixed during §8 stress-testing (4 Aug 2026), not on the original checklist:**
 - `agents/researcher.py` — hardcoded `timeout=150.0` on the Gemma HTTP call
@@ -290,6 +311,19 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   narrower, unverified option (Architect only, since it has no tool calls)
   — not pursued yet, would confound the in-progress Architect consistency
   investigation above if tested now.
+- `agents/critic.py` — **regression, not yet fixed (4 Aug 2026):** Critic hit
+  `max_tokens` (4096, already the raised budget) twice against `spec_v2.json`
+  runs (workflow `8b81d888-84be-48a0-933c-44d92f206ca0` and one earlier attempt),
+  despite the same 4096 budget producing a clean, substantive, non-empty result
+  (gaps=3, spofs=2) against the original stress-test spec above. Not yet
+  determined whether `spec_v2.json`'s Architect output is genuinely longer/more
+  complex than the original stress spec (input-length-driven) or this is
+  per-call output-length variance at temp=0.2 (budget-adjacent but not
+  input-driven). Do not conflate with the empty-gaps investigation above —
+  that bug (empty output) and this one (truncated output) are different
+  failure modes and may have different fixes. Needs its own root-cause pass
+  before any further `CRITIC_TOKEN_BUDGET` increase, to avoid masking a
+  verbosity regression with a bigger number.
 
 ---
 
