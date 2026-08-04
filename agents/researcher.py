@@ -30,7 +30,7 @@ LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL")
 INFRACOST_URL = os.environ.get("INFRACOST_URL")
 GEMMA_MODEL_NAME = os.environ.get("GEMMA_MODEL_NAME")  # must match models.ini preset name
 INFRACOST_LIVE = os.environ.get("INFRACOST_LIVE") == "1"
-RESEARCHER_HTTP_TIMEOUT_S = float(_require_env("RESEARCHER_HTTP_TIMEOUT_S"))
+RESEARCHER_HTTP_TIMEOUT_S = float(os.environ.get("RESEARCHER_HTTP_TIMEOUT_S"))
 RESEARCHER_MAX_OUTPUT_TOKENS = int(os.environ.get("RESEARCHER_TOKEN_BUDGET"))
 
 SYSTEM_PROMPT = """You are the Researcher agent in an architecture review pipeline.
