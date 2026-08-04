@@ -152,6 +152,15 @@ Always produce all three sections for the actual spec given below — never
 stop after ---DIAGRAM---. Each Person, System, System_Ext, Rel, and
 boundary statement MUST be on its own line. Never place two statements
 on the same line.
+
+Before writing any Rel(...) line, the elements it connects must already
+be declared on their own Person(...), System(...), or System_Ext(...)
+line earlier in the diagram. After drafting the diagram, cross-check it
+against your own COMPONENTS list: every id that appears in COMPONENTS
+must also have a corresponding declaration line in the diagram, and vice
+versa. On a diagram with many components, it is easy to introduce an
+entity in one section and forget to declare it in another — check for
+this specifically before finalizing your output.
 """
 
 
