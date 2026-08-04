@@ -328,7 +328,7 @@ def researcher_step(spec_text: str) -> dict:
     return run_researcher(spec_text).model_dump(mode="json")
 
 
-@DBOS.step()
+@DBOS.step(retries_allowed=True, max_attempts=3)
 def architect_step(spec: dict, pricing_context: dict) -> dict:
     return call_architect(spec, pricing_context).model_dump(mode="json")
 
