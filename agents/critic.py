@@ -57,6 +57,11 @@ EXAMPLE OUTPUT:
  "spofs": ["OrderService is a single instance handling both critical paths with no stated redundancy."],
  "missing_integrations": ["NotificationService references an SMS provider via Rel but no external system is declared for it in the components list."]}
 
+List at most 5 gaps, 3 SPOFs, and 3 missing integrations, ordered most
+severe/important first. If more genuinely apply, name only the top ones —
+breadth of coverage matters less than getting the most consequential
+issues right. Keep each entry to one sentence, no exceptions.
+
 Respond with a single JSON object matching this schema, and nothing else:
 {"gaps": [{"description": str, "severity": "low"|"medium"|"high", "related_component": str|null}],
  "spofs": [str], "missing_integrations": [str]}"""
