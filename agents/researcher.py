@@ -30,6 +30,7 @@ LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL")
 INFRACOST_URL = os.environ.get("INFRACOST_URL")
 GEMMA_MODEL_NAME = os.environ.get("GEMMA_MODEL_NAME")  # must match models.ini preset name
 INFRACOST_LIVE = os.environ.get("INFRACOST_LIVE") == "1"
+RESEARCHER_HTTP_TIMEOUT_S = float(_require_env("RESEARCHER_HTTP_TIMEOUT_S"))
 RESEARCHER_MAX_OUTPUT_TOKENS = int(os.environ.get("RESEARCHER_TOKEN_BUDGET"))
 
 SYSTEM_PROMPT = """You are the Researcher agent in an architecture review pipeline.
@@ -132,7 +133,7 @@ def _call_gemma(messages: list[dict], tools: list[dict] | None = None) -> dict:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    resp = httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload, timeout=150.0)
+    resp = httpx.post(f"{LLAMA_SERVER_URL}/v1/chat/completions", json=payload, timeout=RESEARCHER_HTTP_TIMEOUT_S)
     resp.raise_for_status()
     data = resp.json()
     
