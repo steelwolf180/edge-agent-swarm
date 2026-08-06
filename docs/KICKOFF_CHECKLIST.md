@@ -235,9 +235,18 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   not a contaminated number. Per-agent breakdown from run.py log
   timestamps: Researcher ~230s, Architect ~344s, Scribe ~34s, Critic
   ~37s, Judge instant (calculator only). Researcher + Architect (both
-  Gemma) account for ~81% of total compute time. Open question: is
-  5 minutes a realistic target for this model/hardware combination, or
-  does the target itself need revisiting — not yet decided.
+  Gemma) account for ~81% of total compute time.
+  **Not met, target revised (6 Aug 2026):** three further clean runs, all
+  still on Gemma, confirm this isn't noise: `compute_duration_s` of 873.5s
+  (17-component spec, workflow `ed7cb519-...`) and 552.3s (6-component
+  spec_v2, workflow `b1d55d1a-...`, the fastest yet — smaller diagram, not
+  a stability improvement). Researcher + Architect remain ~70-80% of
+  total compute across every run regardless of budget/prompt tuning on
+  Scribe or Critic. Conclusion: 5 minutes is not achievable on Gemma at
+  this hardware/quantization; closing this line as **not met on Gemma —
+  target requires the planned LFM2.5-2.6B swap for Researcher/Architect/
+  Judge (see Parking Lot), not further tuning**. Re-open and re-measure
+  once that swap is validated.
 - [x] Run sustained thermal check across the *whole* pipeline (not just
   per-agent — this hasn't been validated end-to-end yet). **Note (22 July
   2026):** one full pipeline run ended in a hard power-off (black screen,
@@ -255,28 +264,84 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   persisted to Postgres. Thermal data point from the same run: peaked at
   64.0°C, ~19% of the run spent at/above the 60°C guard threshold,
   `no_turbo=1` held throughout, no OOM/crash.
-- [x] Run a second spec with a deliberate change → confirm ADR triggered by diff
-  **Confirmed (4 Aug 2026):** deepdiff/hunk-counting mechanism validated across
-  4 runs against spec_v2.json (single deliberate change: PostgreSQL read replica
-  added to technical_constraints.existing_systems). diff_hunk_count=1 correctly
-  computed each time; diff_summary (code-generated, not LLM output) correctly
-  and specifically names the changed field/values every run.
-  
-  **Known limitation surfaced, not yet resolved:** Scribe's LLM-generated ADR
-  content (decision/consequences/diff_summary's prose) does NOT reliably ground
-  on the actual diff. 3 runs against the identical clean diff produced 3 different
-  fabricated decisions (Elasticsearch centralization; generic data-source
-  centralization near-verbatim matching spec's own open_questions[0]; Catalog/
-  Search service duplication) — none referencing the real PostgreSQL/replica
-  change. Ruled out: context leakage (blackboard_context and diff_summary
-  independently verified clean). Ruled out: prompt-adherence (2 distinct
-  system-prompt fixes attempted — explicit grounding/re-read instruction,
-  then format/length constraints — neither improved content grounding, though
-  the second did fix an unrelated context-field format regression). Verdict:
-  capability ceiling at LFM2.5-VL-1.6B, same root cause as Critic empty-gaps
-  investigation below, different symptom (fabrication vs. omission). Logged as
-  known limitation (spec §7); model swap for Scribe/Critic remains parked v2,
-  not pursued now (see Parking Lot).
+- [x] Run a second spec with a deliberate change → confirm ADR triggered by diff.
+  **Confirmed (6 Aug 2026):** `spec_v2.json` (10 microservices consolidated
+  into 1 + `ops_staff`/admin dashboard actor removed) run against prior
+  `spec.json`, workflow `b1d55d1a-92b6-4251-a95c-10a1326dce07`. Clean on
+  first attempt after the fixes below: `diff_hunk_count=1`,
+  `adrs_per_diff=1.0` (not flagged, target met exactly), non-salvaged ADR
+  content. Also first confirmation that Architect's prior-ADR read works
+  end-to-end: `informed_by_adrs: ["adr_0001"]`, `Informed by prior ADRs:
+  adr_0001` in the review output — the Day 5 design decision (§2/§5 of
+  the spec) is now validated in a live run, not just implemented.
+
+**Bugs found and fixed during §8 stress-testing (6 Aug 2026), not on the original checklist:**
+- `agents/scribe.py` — three distinct Scribe failure modes surfaced
+  chasing the diff-trigger test above, none previously exercised because
+  no real incremental diff had been run before:
+  1. Truncation at `SCRIBE_TOKEN_BUDGET` (confirmed reproducible at
+     temperature=0.05, not sampling noise). Fixed: `_salvage_truncated_
+     scribe_output()` extracts every field that closed as valid JSON,
+     salvages the in-progress field at its last complete sentence, marks
+     anything unstarted with an explicit (bracket-free) placeholder for
+     human review — never a silent blank, never a burned retry.
+  2. Malformed JSON on a *complete* generation (`finish_reason != "length"`,
+     e.g. `Expecting ',' delimiter`) — LFM finishing normally but producing
+     structurally broken JSON. Reuses the same salvage path, tagged with a
+     distinct log reason (`malformed_json` vs `truncated`) since the
+     failure mode differs.
+  3. Non-string field values — `diff_summary` came back as a nested dict
+     on a real incremental diff (`spec_v2.json`), reproducible 3/3 times
+     at temp=0.05, exhausted `scribe_step`'s DBOS retries and failed the
+     whole pipeline (workflow `d26478a0-...`, ~670s of compute, zero
+     artifacts). Root cause: `summarize_diff()` interpolated DeepDiff's
+     raw dict reprs directly into the prompt; LFM appears to have mirrored
+     that shape back into `diff_summary` instead of paraphrasing it. Fixed
+     at the source (`_format_diff_detail()` renders diff entries as prose,
+     never dict repr) and defended at the boundary (`_coerce_adr_string_
+     fields()` stringifies+flags any non-string field instead of raising).
+  All three salvage/coercion paths share one `salvage_reason`-tagged log
+  line so a future run's `finish_reason=="length"` frequency, malformed-
+  JSON frequency, and non-string frequency can be told apart in the logs.
+- `pipeline/persistence.py` — `serialize_adr_markdown()` wrote
+  `diff_summary` (and only that field) with no bracket-safety handling,
+  unlike `supersedes`/`affected_diagrams` which already went through
+  `_format_frontmatter_list()`. When Scribe's truncation salvage produced
+  a bracketed placeholder (`[MISSING: ...]`), `architect.py`'s frontmatter
+  reader parsed it as a YAML-style list instead of a string, silently
+  failing `ADRRecord` validation and warn-skipping the file —
+  `informed_by_adrs` came back `[]` on every run for two full pipeline
+  runs before this was caught, quietly defeating the Day 5 prior-ADR-read
+  behavior without any visible pipeline error. Fixed two ways: (1) salvage
+  placeholders in `scribe.py` no longer use square brackets, removing the
+  trigger; (2) `_guard_frontmatter_string()` added to `persistence.py` —
+  fails loud at write time if any frontmatter string value starts with
+  `[`, rather than writing a file that misparses silently three steps
+  later on read. `artifacts/v1/adr_0001.md`'s corrupted `diff_summary`
+  hand-corrected to unblock the fix from #3 above.
+- Known limitation surfaced, not a crash — **not yet fixed:** Scribe's
+  `decision`/`diff_summary` content shows signs of a canned "centralize
+  product data in a single source of truth service" template, confirmed
+  byte-identical across two structurally unrelated diffs (workflow
+  `d86d5467-...`, a pure creation-diff with nothing to centralize from,
+  vs `b1d55d1a-...`, where the sentence is at least directionally
+  plausible). Doesn't affect pipeline mechanics — validates, renders,
+  persists cleanly — so it isn't a §8 blocker, but it means ADR *content*
+  isn't yet trustworthy without human review. Filed under existing
+  Known Limitations "Rubber Stamp Risk" (§7 of the spec) rather than as
+  a new item. Suggested check before trusting Scribe output generally:
+  run against a diff deliberately unrelated to data duplication (e.g. a
+  new notification channel, a timeout change) and confirm the canned
+  text doesn't still appear; if it does, this is prompt-level (a worked
+  few-shot example of a *different* kind of decision, same fix pattern
+  that resolved Critic's empty-gaps bug), not mechanical.
+- Stress-test artifacts (`adr_0001.md`, `adr_0002.md` and their review
+  `.json`/`.md` pairs) relocated out of `artifacts/v1/`/`artifacts/v2/`
+  to `artifacts/stress_test/` ahead of §9's GitLab commit, so synthetic
+  e-commerce fixtures aren't mistaken for real project decisions in the
+  public paper trail. Doubles as a regression fixture set for the
+  template-bias issue above — re-run these same diffs after any Scribe
+  prompt change to confirm the canned text stops appearing.
 
 **Bugs found and fixed during §8 stress-testing (4 Aug 2026), not on the original checklist:**
 - `agents/researcher.py` — hardcoded `timeout=150.0` on the Gemma HTTP call
@@ -311,19 +376,6 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   narrower, unverified option (Architect only, since it has no tool calls)
   — not pursued yet, would confound the in-progress Architect consistency
   investigation above if tested now.
-- `agents/critic.py` — **regression, not yet fixed (4 Aug 2026):** Critic hit
-  `max_tokens` (4096, already the raised budget) twice against `spec_v2.json`
-  runs (workflow `8b81d888-84be-48a0-933c-44d92f206ca0` and one earlier attempt),
-  despite the same 4096 budget producing a clean, substantive, non-empty result
-  (gaps=3, spofs=2) against the original stress-test spec above. Not yet
-  determined whether `spec_v2.json`'s Architect output is genuinely longer/more
-  complex than the original stress spec (input-length-driven) or this is
-  per-call output-length variance at temp=0.2 (budget-adjacent but not
-  input-driven). Do not conflate with the empty-gaps investigation above —
-  that bug (empty output) and this one (truncated output) are different
-  failure modes and may have different fixes. Needs its own root-cause pass
-  before any further `CRITIC_TOKEN_BUDGET` increase, to avoid masking a
-  verbosity regression with a bigger number.
 
 ---
 
