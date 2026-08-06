@@ -90,6 +90,25 @@ def compute_spec_diff(
     return DeepDiff(baseline, current_spec.model_dump(), ignore_order=True, view="tree")
 
 
+def _format_diff_detail(detail) -> str:
+    """Render a single DeepDiff change entry as plain prose, never as a
+    raw dict/object repr. DeepDiff's tree view yields dict-shaped detail
+    objects (e.g. {'old_value': ..., 'new_value': ...}) for values_changed
+    entries -- f-string interpolating that directly puts dict-looking text
+    straight into the prompt. Confirmed on a real incremental diff: LFM
+    mirrored that shape back into diff_summary as a nested JSON object
+    instead of a string, failing ADROutput validation 3/3 times at
+    temperature=0.05 (deterministic, not sampling noise a retry could
+    route around). Keeping this human-readable removes the shape there
+    was to imitate in the first place.
+    """
+    if isinstance(detail, dict):
+        old = detail.get("old_value", "?")
+        new = detail.get("new_value", "?")
+        return f"changed from {old!r} to {new!r}"
+    return str(detail)
+
+
 def summarize_diff(diff: DeepDiff, max_items: int = 8) -> str:
     """Compress a DeepDiff into a short bullet list for the prompt.
 
@@ -99,7 +118,7 @@ def summarize_diff(diff: DeepDiff, max_items: int = 8) -> str:
     lines: list[str] = []
     for change_type, items in diff.to_dict().items():
         for path, detail in list(items.items())[:max_items]:
-            lines.append(f"- {change_type}: {path} -> {detail}")
+            lines.append(f"- {change_type}: {path} -> {_format_diff_detail(detail)}")
     return "\n".join(lines[:max_items]) if lines else "No field-level changes detected."
 
 def hunk_count_from_diff(diff: DeepDiff) -> int:
@@ -157,14 +176,51 @@ def _salvage_truncated_scribe_output(raw: str) -> dict:
         if partial_match and partial_match.group(1).strip():
             trimmed = _last_complete_sentence(partial_match.group(1))
             salvaged[field] = trimmed or (
-                "[TRUNCATED: generation exceeded token budget before completing this field]"
+                "TRUNCATED: generation exceeded token budget before completing this field"
             )
         else:
             salvaged[field] = (
-                "[MISSING: generation exceeded token budget before this field started]"
+                "MISSING: generation exceeded token budget before this field started"
             )
 
     return salvaged
+
+_MAX_COERCED_FIELD_CHARS = 300
+
+
+def _coerce_adr_string_fields(parsed: dict) -> tuple[dict, list[str]]:
+    """Defends against LFM returning a non-string value (dict/list) for a
+    field ADROutput requires as str. Observed on a real incremental diff
+    (spec_v2.json, 6 Aug): the prompt's diff summary contained dict-shaped
+    text and the model mirrored that shape back into diff_summary as a
+    nested object instead of paraphrasing it -- reproducible 3/3 times at
+    temperature=0.05, exhausting scribe_step's DBOS retries and failing
+    the whole pipeline with zero artifacts after ~670s of compute.
+    _format_diff_detail() above should prevent the trigger going forward,
+    but this is the same class of "model didn't follow the schema" as
+    truncation/malformed JSON and deserves the same treatment: coerce
+    once, don't burn 3 identical retries finding out it fails the same
+    way each time. Compact JSON keeps the coerced value inspectable
+    without silently blanking it; the leading text guarantees the value
+    never starts with '[', so it can't trip the frontmatter list-parsing
+    bug persistence.py now guards against, and it's a distinct visible
+    flag for human review at the approval gate rather than a wall of raw
+    JSON masquerading as a normal ADR sentence.
+    """
+    coerced: list[str] = []
+    for field in _FIELD_ORDER:
+        value = parsed.get(field)
+        if value is not None and not isinstance(value, str):
+            compact = json.dumps(value, separators=(",", ":"))
+            if len(compact) > _MAX_COERCED_FIELD_CHARS:
+                compact = compact[:_MAX_COERCED_FIELD_CHARS] + "...(truncated)"
+            parsed[field] = (
+                f"NON-STRING OUTPUT (coerced from {type(value).__name__}, "
+                f"flag for human review): {compact}"
+            )
+            coerced.append(field)
+    return parsed, coerced
+
 
 async def run_scribe(
     prior_spec: ArchitectureSpec | None,
@@ -233,6 +289,15 @@ async def run_scribe(
             )
             parsed = _salvage_truncated_scribe_output(raw)
             salvage_reason = "malformed_json"
+
+    parsed, coerced_fields = _coerce_adr_string_fields(parsed)
+    if coerced_fields:
+        print(
+            f"WARNING: Scribe returned non-string value(s) for "
+            f"{coerced_fields} -- coerced to a flagged string instead of "
+            f"failing the step."
+        )
+        salvage_reason = salvage_reason or "non_string_field"
 
     if salvage_reason:
         # Not part of ADROutput's schema -- logged, not persisted, so it can't
