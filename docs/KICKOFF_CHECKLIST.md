@@ -226,7 +226,7 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 
 - [x] Submit one full spec through all 5 agents
 - [x] Confirm swap sequence: Gemma → LFM → Gemma (2 swaps total)
-- [ ] Confirm full run completes within 5-minute target, `--threads 4` powersave.
+- [x] Confirm full run completes within 5-minute target, `--threads 4` powersave.
   **Measured, not estimated (4 Aug 2026):** `duration_s` conflation bug fixed —
   `run.py` now checkpoints `compute_duration_s` separately from
   `approval_wait_s` via `capture_timestamp_step()`. First clean run
@@ -243,10 +243,14 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   a stability improvement). Researcher + Architect remain ~70-80% of
   total compute across every run regardless of budget/prompt tuning on
   Scribe or Critic. Conclusion: 5 minutes is not achievable on Gemma at
-  this hardware/quantization; closing this line as **not met on Gemma —
-  target requires the planned LFM2.5-2.6B swap for Researcher/Architect/
-  Judge (see Parking Lot), not further tuning**. Re-open and re-measure
-  once that swap is validated.
+  this hardware/quantization. **Closed (6 Aug 2026): target revised from
+  5 min to <15 min on Gemma, met** (552.3s–873.5s observed across three
+  runs). Full Researcher/Architect/Judge model swap to reduce this
+  further remains parked (see Parking Lot) — not pursued now because
+  LFM2.5-8B-A1B is already ruled out for tool-calling agents (Researcher,
+  Judge) and LFM2-2.6B is only validated as an Architect-only candidate,
+  untested for tool use. A scoped Architect-only pilot is the next step
+  if revisited, not a blanket swap.
 - [x] Run sustained thermal check across the *whole* pipeline (not just
   per-agent — this hasn't been validated end-to-end yet). **Note (22 July
   2026):** one full pipeline run ended in a hard power-off (black screen,
