@@ -74,18 +74,46 @@ def _format_frontmatter_list(items: list[str]) -> str:
     return "[" + ", ".join(items) + "]"
 
 
+def _guard_frontmatter_string(field_name: str, value: str) -> str:
+    """Fail loud rather than silently writing an ADR frontmatter file that
+    will misparse on read. architect.py's frontmatter reader treats any
+    value starting with '[' as a bracket-delimited list (see
+    _format_frontmatter_list above, and its own docstring) — there's no
+    quoting convention on this side that's confirmed to escape that
+    without also changing the reader, so the safe fix at this layer is to
+    refuse to write it, rather than produce a file that
+    _load_recent_adrs() will warn-and-skip later with no error at the
+    point where it actually went wrong (exactly what happened with
+    adr_0001.md's diff_summary after Scribe's truncation salvage used a
+    bracketed placeholder). Same "no silent fallback" principle as
+    _require_env() elsewhere in this project — surface the failure at the
+    step that caused it, not three steps downstream on read.
+    """
+    if value.strip().startswith("["):
+        raise ValueError(
+            f"Refusing to write ADR frontmatter field {field_name!r}: value "
+            f"starts with '[', which architect.py's frontmatter reader "
+            f"parses as a list, not a string, corrupting this file's "
+            f"round-trip. Value (truncated): {value[:100]!r}. Fix the "
+            f"source of this value (e.g. a salvage placeholder in "
+            f"scribe.py) rather than escaping it here."
+        )
+    return value
+
+
 def serialize_adr_markdown(record: ADRRecord) -> str:
     """Inverse of architect.py's _parse_adr_markdown. Field order and
     header casing ('## Context' etc.) must match _SECTION_RE /
     _FRONTMATTER_RE exactly — a mismatch here doesn't raise loudly on the
     read side, it just gets warn-and-skipped by _load_recent_adrs(),
     silently dropping a decision from PRIOR_DECISIONS."""
+    diff_summary = _guard_frontmatter_string("diff_summary", record.diff_summary)
     frontmatter = "\n".join([
         f"adr_id: {record.adr_id}",
         f"spec_version: {record.spec_version}",
         f"status: {record.status}",
         f"supersedes: {_format_frontmatter_list(record.supersedes)}",
-        f"diff_summary: {record.diff_summary}",
+        f"diff_summary: {diff_summary}",
         f"affected_diagrams: {_format_frontmatter_list(record.affected_diagrams)}",
         f"created: {record.created.isoformat()}",
     ])
