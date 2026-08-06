@@ -206,17 +206,40 @@ async def run_scribe(
         if owns_client:
             await client.aclose()
     
+    salvage_reason = None
     if choice.get("finish_reason") == "length":
         print(
             f"WARNING: Scribe hit max_tokens ({SCRIBE_MAX_OUTPUT_TOKENS}) -- "
             f"salvaging partial output instead of failing the step."
         )
         parsed = _salvage_truncated_scribe_output(raw)
+        salvage_reason = "truncated"
     else:
         try:
             parsed = json.loads(strip_code_fence(raw))
         except json.JSONDecodeError as e:
-            raise ValueError(f"Scribe: LFM did not return valid JSON: {raw[:200]}") from e
+            # Not the truncation case above -- finish_reason != "length" here,
+            # meaning LFM completed generation but the JSON is structurally
+            # broken (bad delimiter, stray comma, etc). Reuse the same
+            # sentence-boundary salvage rather than raising and letting DBOS's
+            # step-level retry burn a full LFM inference pass on output that
+            # may fail identically at temperature=0.05. Kept as a distinct
+            # log message/reason from the truncation case since the failure
+            # mode -- and what it implies about compute_duration_s -- differs.
+            print(
+                f"WARNING: Scribe produced malformed JSON on a complete "
+                f"generation (finish_reason={choice.get('finish_reason')!r}, "
+                f"error={e}) -- salvaging instead of failing the step."
+            )
+            parsed = _salvage_truncated_scribe_output(raw)
+            salvage_reason = "malformed_json"
+
+    if salvage_reason:
+        # Not part of ADROutput's schema -- logged, not persisted, so it can't
+        # trip strict validation below. Surfacing it here (rather than only in
+        # the WARNING prints above) makes it greppable from a single line if
+        # this ever needs to be correlated against compute_duration_s.
+        print(f"INFO: Scribe output was salvaged (reason={salvage_reason}).")
 
     # MVP guardrail: force this regardless of what the model returned, rather than
     # trusting prompt compliance alone -- 'container' is out of scope until v2.
