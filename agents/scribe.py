@@ -8,8 +8,9 @@ smoke-tested without a running DBOS workflow.
 """
 import json
 import os
-
 import httpx
+import re
+
 from deepdiff import DeepDiff
 from pydantic import ValidationError
 
@@ -117,6 +118,53 @@ def build_user_prompt(diff_summary: str, blackboard_context: str) -> str:
         "Write the ADR now."
     )
 
+_FIELD_ORDER = ["context", "decision", "consequences", "diff_summary"]
+_STRING_FIELD_RE = re.compile(r'"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _last_complete_sentence(text: str) -> str:
+    """Trim partial text at the last complete sentence boundary. Falls back
+    to the raw (stripped) text if no boundary is found, so callers always
+    get something rather than an empty string."""
+    text = text.strip()
+    matches = list(re.finditer(r'[.!?](?:\s|$)', text))
+    if not matches:
+        return text
+    return text[:matches[-1].end()].strip()
+
+
+def _salvage_truncated_scribe_output(raw: str) -> dict:
+    """Best-effort recovery when LFM hits max_tokens mid-generation.
+
+    Confirmed reproducible at temperature=0.05 (identical output across
+    retries) -- not sampling noise a retry can route around. Rather than
+    raising and burning a retry that will fail identically, extract every
+    field that closed as a valid JSON string, salvage the in-progress
+    field at its last complete sentence, and mark anything that never
+    started with an explicit placeholder for human review at the approval
+    gate -- never a silent blank.
+    """
+    stripped = strip_code_fence(raw)
+    complete_fields = dict(_STRING_FIELD_RE.findall(stripped))
+
+    salvaged = {}
+    for field in _FIELD_ORDER:
+        if field in complete_fields:
+            salvaged[field] = complete_fields[field]
+            continue
+
+        partial_match = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*)$', stripped)
+        if partial_match and partial_match.group(1).strip():
+            trimmed = _last_complete_sentence(partial_match.group(1))
+            salvaged[field] = trimmed or (
+                "[TRUNCATED: generation exceeded token budget before completing this field]"
+            )
+        else:
+            salvaged[field] = (
+                "[MISSING: generation exceeded token budget before this field started]"
+            )
+
+    return salvaged
 
 async def run_scribe(
     prior_spec: ArchitectureSpec | None,
@@ -159,16 +207,16 @@ async def run_scribe(
             await client.aclose()
     
     if choice.get("finish_reason") == "length":
-        raise ValueError(
-            f"Scribe: LFM hit max_tokens ({SCRIBE_MAX_OUTPUT_TOKENS}) before finishing "
-            f"output. Raise SCRIBE_TOKEN_BUDGET or shorten the prompt. "
-            f"Partial output: {raw[:200]}"
+        print(
+            f"WARNING: Scribe hit max_tokens ({SCRIBE_MAX_OUTPUT_TOKENS}) -- "
+            f"salvaging partial output instead of failing the step."
         )
-
-    try:
-        parsed = json.loads(strip_code_fence(raw))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Scribe: LFM did not return valid JSON: {raw[:200]}") from e
+        parsed = _salvage_truncated_scribe_output(raw)
+    else:
+        try:
+            parsed = json.loads(strip_code_fence(raw))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Scribe: LFM did not return valid JSON: {raw[:200]}") from e
 
     # MVP guardrail: force this regardless of what the model returned, rather than
     # trusting prompt compliance alone -- 'container' is out of scope until v2.
