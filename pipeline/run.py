@@ -345,7 +345,7 @@ async def scribe_step(
     return adr_output.model_dump(mode="json")
 
 
-@DBOS.step()
+@DBOS.step(retries_allowed=True, max_attempts=3)
 async def critic_step(
     architect_output: dict,
     adr_output: dict,

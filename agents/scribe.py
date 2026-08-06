@@ -38,8 +38,8 @@ FORMATTING RULES (all fields):
   Paraphrase concisely, in your own words, in 1-2 sentences per field.
 - "context" must always be exactly the short fixed label: "L1 System Context". Do not put
   any other content in this field.
-- "decision" and "consequences" must each be 1-2 sentences, specific to the one change in
-  the diff -- not a summary of the entire architecture or blackboard context.
+- "decision" and "consequences" must each be ONE sentence, no more than 25 words, specific
+  to the one change in the diff -- not a summary of the entire architecture or blackboard context.
 
 Respond with a single JSON object matching this schema, and nothing else:
 {"context": str, "decision": str, "consequences": str, "diff_summary": str, "affected_diagrams": ["context"]}
@@ -134,8 +134,10 @@ async def run_scribe(
             {"role": "system", "content": SCRIBE_SYSTEM_PROMPT},
             {"role": "user", "content": build_user_prompt(diff_summary, blackboard_context)},
         ],
-        "temperature": 0.2,
+        "temperature": 0.05,
         "max_tokens": SCRIBE_MAX_OUTPUT_TOKENS,
+        "frequency_penalty": 0.4,
+        "presence_penalty": 0.2,
     }
 
     owns_client = client is None
