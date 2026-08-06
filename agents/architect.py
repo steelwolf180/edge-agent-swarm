@@ -161,6 +161,11 @@ must also have a corresponding declaration line in the diagram, and vice
 versa. On a diagram with many components, it is easy to introduce an
 entity in one section and forget to declare it in another — check for
 this specifically before finalizing your output.
+
+In the COMPONENTS list, the "type" field must be exactly one of these three
+literal strings: "person", "internal_system", "external_system". Never use
+"system", "actor", "external", or any other variant — these are the only
+three valid values, and using anything else will fail validation.
 """
 
 
@@ -220,9 +225,50 @@ def _validate_diagram_ids(diagram: str) -> None:
             f"{sorted(undefined)}. Declared ids: {sorted(declared)}"
         )
 
+_COMPONENT_TYPE_TO_DIAGRAM_FN = {
+    "person": "Person",
+    "internal_system": "System",
+    "external_system": "System_Ext",
+}
+
+def _synthesize_declaration(component: dict[str, Any]) -> str:
+    fn = _COMPONENT_TYPE_TO_DIAGRAM_FN.get(component.get("type"), "System")
+    name = component.get("name", component["id"])
+    description = component.get("description", "")
+    return f'{fn}({component["id"]}, "{name}", "{description}")'
+
+
+def _repair_undeclared_ids(diagram: str, components: list[dict[str, Any]]) -> str:
+    """Best-effort mechanical repair for the declare-before-reference bug
+    (recurring as of 6 Aug 2026 — 2nd confirmed failure of the 22 Jul
+    prompt-only fix, see KICKOFF_CHECKLIST.md §8). If a Rel(...) references
+    an id missing from the diagram but present in the model's own
+    COMPONENTS list, synthesize the declaration line from that component's
+    own name/type/description instead of failing the step. Ids with no
+    COMPONENTS match are left alone — _validate_diagram_ids() still raises
+    for those, since there's nothing to repair from."""
+    declared = set(_DECLARED_ID_RE.findall(diagram))
+    rels = _REL_RE.findall(diagram)
+    referenced = {src for src, dst in rels} | {dst for src, dst in rels}
+    undeclared = referenced - declared
+
+    components_by_id = {c["id"]: c for c in components if "id" in c}
+    repaired_lines = [
+        _synthesize_declaration(components_by_id[cid])
+        for cid in sorted(undeclared)
+        if cid in components_by_id
+    ]
+    if not repaired_lines:
+        return diagram
+
+    lines = diagram.splitlines()
+    insert_at = 1 if lines and lines[0].strip().lower().startswith("c4context") else 0
+    if len(lines) > insert_at and lines[insert_at].strip().lower().startswith("title"):
+        insert_at += 1
+    return "\n".join(lines[:insert_at] + ["    " + l for l in repaired_lines] + lines[insert_at:])
+
 def parse_model_sections(raw: str) -> dict[str, Any]:
     context_diagram = _normalize_diagram_linebreaks(_extract_section(raw, "---DIAGRAM---", "---DOCS---"))
-    _validate_diagram_ids(context_diagram)
     docs = _extract_section(raw, "---DOCS---", "---COMPONENTS---")
     components_raw = _extract_section(raw, "---COMPONENTS---", "---END---")
 
@@ -230,6 +276,9 @@ def parse_model_sections(raw: str) -> dict[str, Any]:
         components = json.loads(components_raw)
     except json.JSONDecodeError as e:
         raise ValueError(f"Components section is not valid JSON: {e}\nRaw: {components_raw!r}") from e
+
+    context_diagram = _repair_undeclared_ids(context_diagram, components)
+    _validate_diagram_ids(context_diagram)
 
     return {
         "context_diagram": context_diagram,
