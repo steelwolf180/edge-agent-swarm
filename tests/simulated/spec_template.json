@@ -1,0 +1,76 @@
+{
+  "spec_version": 1,
+  "project_overview": {
+    "purpose": "Cloud-hosted retrieval-augmented generation (RAG) system that answers customer and internal support questions by retrieving relevant passages from support docs, product docs, and release notes, then generating grounded answers with citations",
+    "target_users": "External customers using self-serve support chat, internal support agents using an assisted-answer sidebar, and product/docs teams who own the underlying content",
+    "deployment_environment": "Cloud, multi-tenant SaaS deployment on AWS, single region (us-east-1) for MVP with multi-region as a post-launch consideration"
+  },
+  "functional_requirements": {
+    "core_features": [
+      "Document Ingestion Service (Python): pulls source docs from Confluence, Zendesk help center, and a Git-based docs repo; normalizes to Markdown/plaintext, chunks, and tags with source metadata (product area, doc type, last-updated date); flags low-quality parses at ingestion time using chunk-length outlier detection and non-text-content ratio (tables/images stripped to near-empty text), routing flagged docs to a review queue instead of silently indexing them",
+      "Embedding Service (Python): generates vector embeddings for each chunk using a hosted embedding model API; re-embeds on content change, not on a fixed schedule",
+      "Vector Store (managed, e.g. Pinecone/pgvector-on-RDS): stores chunk embeddings + metadata; supports metadata-filtered similarity search (e.g. restrict to a given product area)",
+      "Retrieval Service (Python): given a user query, retrieves top-k relevant chunks via vector similarity plus metadata filters; supports hybrid search (vector + keyword) to catch exact-match queries (error codes, API names); computes a confidence score from top-k similarity scores and gates generation on a minimum threshold",
+      "Generation Service (Python, hosted LLM API): constructs a grounded prompt from retrieved chunks + query, generates an answer with inline citations back to source docs; skipped in favor of escalation when Retrieval Service confidence is below threshold",
+      "Escalation Handler (Node.js): triggered when retrieval confidence is low or generation is skipped; for customer chat, hands off to a Zendesk support ticket pre-filled with the query and top retrieved (but low-confidence) chunks; for the agent sidebar, surfaces raw retrieved snippets without a synthesized answer, leaving the agent to work from source material directly",
+      "Feedback Service (Node.js, PostgreSQL): captures thumbs up/down and free-text feedback per answer, linked to the query, retrieved chunks, and generated answer for later review",
+      "Evaluation Service (Python): runs against Feedback Service + retrieval logs on a scheduled batch job; surfaces chunks that are frequently retrieved but consistently thumbs-downed or never cited in a well-rated answer, flagging the source doc as a likely ingestion/chunking problem rather than a content problem; output feeds the Admin Console's stale/under-performing doc list",
+      "Support Chat Widget (React): customer-facing chat UI embedded in the help center",
+      "Agent Sidebar (React, internal): shows the same RAG answer plus retrieved source snippets to human support agents, who can edit/send or discard",
+      "Admin Console (React, internal): lets docs/product teams see which queries got low-confidence or low-feedback answers, and which source docs are stale or under-retrieved"
+    ],
+    "key_user_flows": [
+      "Customer types a question in the support chat widget -> Retrieval Service fetches top-k chunks and scores confidence -> if above threshold, Generation Service produces a cited answer -> customer rates it thumbs up/down",
+      "Customer asks a question with no confident match in the corpus -> Retrieval Service confidence falls below threshold -> Escalation Handler creates a pre-filled Zendesk ticket and tells the customer a human will follow up, instead of generating an ungrounded answer",
+      "Support agent opens a ticket -> Agent Sidebar auto-generates a suggested answer with source snippets when confidence is high, or shows raw retrieved snippets only when confidence is low -> agent edits or sends as-is -> edit/send/discard is logged as implicit feedback",
+      "Docs team publishes an updated doc in Confluence -> Ingestion Service detects the change, parses and chunks it, flags the doc for manual review if the parse looks malformed -> chunk is re-embedded and upserted into the Vector Store -> next query against that content reflects the update",
+      "Evaluation Service runs nightly -> cross-references Feedback Service ratings against which chunks were retrieved -> flags chunks/docs with a poor retrieval-to-positive-feedback ratio -> Admin Console surfaces these to the docs team, distinguishing 'likely bad chunking' (frequently retrieved, rarely helpful) from 'likely stale content' (rarely retrieved despite being about an actively-searched topic)",
+      "Product/docs team reviews Admin Console weekly -> identifies queries with consistently low feedback and ingestion-flagged docs -> flags the underlying doc for a content fix or re-ingestion"
+    ],
+    "integration_points": [
+      "Confluence API (source docs)",
+      "Zendesk API (help center articles + ticket context)",
+      "Git-hosted docs repo (source docs, versioned)",
+      "Hosted embedding model API",
+      "Hosted LLM API (generation)",
+      "Managed vector store (Pinecone or equivalent)"
+    ]
+  },
+  "non_functional_requirements": {
+    "performance": "Chat answer latency under 4 seconds end-to-end (retrieval + generation) at p95; ingestion/re-embedding of a single doc change under 2 minutes",
+    "scalability": "Must support burst traffic during product launches or incidents (~5x baseline query volume) without manual scaling intervention; corpus expected to grow from ~5k to ~50k chunks over first year",
+    "availability": "Target 99.5% uptime for the customer-facing chat path; internal agent sidebar and admin console can tolerate brief degradation",
+    "security": "No PCI/PHI data expected in support docs, but customer chat transcripts may contain account identifiers or PII incidentally typed by users; transcripts must be encrypted at rest and access-controlled; source docs may include pre-GA product info requiring tenant-level access scoping",
+    "observability": "Full trace per query: retrieved chunk IDs + scores, prompt sent to the LLM, generated answer, latency breakdown by stage (retrieval vs. generation); dashboards for answer feedback rate, retrieval hit rate, and stale-content flags"
+  },
+  "technical_constraints": {
+    "language_framework": ["Python", "Node.js", "React"],
+    "existing_systems": [
+      "Confluence (existing docs source of truth)",
+      "Zendesk (existing help center + ticketing)",
+      "AWS (existing cloud provider for other internal services)",
+      "PostgreSQL (existing, used for feedback storage)"
+    ],
+    "budget_infra_limits": "Hosted embedding + LLM API costs are the dominant recurring cost and must be tracked per-query; MVP budget assumes usage-based API pricing rather than self-hosted inference",
+    "team_skillset": "Small platform team (3 engineers) comfortable with Python and React; no prior production RAG experience, first system of this kind for the team"
+  },
+  "data_architecture": {
+    "data_sources": [
+      "Confluence pages (support + product documentation)",
+      "Zendesk help center articles",
+      "Git-hosted docs repo (versioned technical docs)",
+      "User query + feedback logs (generated by the system itself)"
+    ],
+    "storage_requirements": "Managed vector store for chunk embeddings + metadata; PostgreSQL for query/feedback/audit logs; object storage (S3) for raw ingested source documents prior to chunking, to support re-chunking without re-fetching from source",
+    "data_flow": "Source doc change (Confluence/Zendesk/Git) -> Ingestion Service normalizes + chunks -> Embedding Service generates vectors -> Vector Store upserts chunk + metadata -> user query -> Retrieval Service searches Vector Store -> Generation Service produces answer -> Feedback Service logs query/answer/feedback to PostgreSQL",
+    "retention_compliance": "Chat transcripts retained 90 days by default, configurable per tenant; source doc embeddings retained until source doc is deleted or superseded; no formal compliance framework defined yet beyond standard SaaS data handling practices"
+  },
+  "open_questions": [
+    "Should retrieval be scoped per-tenant (multi-tenant docs isolation) or shared across all tenants for MVP, given the initial customer base shares mostly the same product docs?",
+    "What confidence threshold triggers escalation, and how is it tuned — a fixed similarity cutoff set by gut feel for MVP, or calibrated against a labeled set of known-answerable vs. known-unanswerable queries before launch?",
+    "Escalation handles the 'nothing relevant found' failure mode via the confidence gate, but not fabrication despite decent retrieval (the model citing a chunk that doesn't actually support its claim) — is a post-hoc grounding check needed for MVP, or deferred as a v2 concern once real fabrication-rate data exists?",
+    "Should the Agent Sidebar's edit/send/discard actions feed back into a fine-tuning or re-ranking loop, or remain purely observational for MVP?",
+    "How is staleness detected and surfaced — is a doc-changed webhook from Confluence/Zendesk sufficient, or does re-embedding need a periodic full-corpus reconciliation pass to catch missed events?",
+    "Evaluation Service's 'frequently retrieved but rarely helpful' signal needs a minimum sample size per chunk to be statistically meaningful — what's the cold-start behavior for newly-ingested docs that haven't accumulated enough query volume to evaluate yet?"
+  ]
+}
