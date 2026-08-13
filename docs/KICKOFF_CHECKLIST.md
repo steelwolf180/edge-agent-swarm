@@ -383,6 +383,48 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 
 ---
 
+## 8.1 Post-Run Fixes (13 Aug 2026, workflow 7cb63d6b-...)
+
+**Confirmed via real run + human reject**, not yet fixed:
+
+- [ ] **Scribe fabrication (P0, blocks trusting any ADR)** — decision text
+  (tenant-scoped retrieval isolation) had no basis in spec/Researcher/
+  Architect output; invented on a **zero-diff first run**, distinct from
+  6 Aug's byte-identical-template issue (that one at least followed a real
+  diff). Fix: system prompt must require grounding in SPEC/ArchitectOutput/
+  diff, and explicitly say "no meaningful decision to record" when there's
+  no real diff to explain, rather than inventing one. Same fix class as
+  Critic empty-gaps.
+- [ ] **Scribe truncation recurring at 4096** — `diff_summary` salvaged again
+  (12-component spec). Check correlation with component count; consider
+  raising `SCRIBE_TOKEN_BUDGET` or trimming diff-detail prompt input.
+- [ ] **Critic spofs/missing_integrations = gaps, reworded** — all three
+  lists identical content on this run, only schema-valid not analysis-valid.
+  Needs prompt fix distinguishing the three categories, likely a worked
+  example (same pattern as Architect declare-before-reference fix).
+- [ ] **Architect `technology` list-vs-string (P3, self-heals via retry)** —
+  add prompt instruction (join to comma string) + boundary coercion in
+  `parse_model_sections()`, mirroring `_coerce_adr_string_fields()`.
+- [ ] **Timing check, not a fix** — this run: `compute_duration_s=1341.4s`,
+  well outside prior 552–874s range. Re-check once #1–#3 are fixed; may
+  just be Scribe truncation cost, may be the open retries-timing item.
+
+**Session plan (6 pomodoros, one variable at a time):**
+1. Fix Scribe fabrication prompt only
+2. Re-run same spec (`tests/simulated/cloud_rag.json`), confirm ADR is
+   grounded and nothing else regressed
+3. Fix Scribe truncation (budget or prompt trim)
+4. Fix Critic gaps/spofs/missing_integrations distinctness
+5. Re-run, full checklist sign-off pass
+6. Buffer / Architect technology fix if time remains — defer to next
+   session if not
+
+Do NOT attempt §9 (Paper Trail) or spec bumping until this addendum is
+clear — nothing should hit the versioned artifact store with a known
+fabrication bug still open.
+
+---
+
 ## 9. Paper Trail
 
 - [ ] Commit `artifacts/v1/*.md` to GitLab
