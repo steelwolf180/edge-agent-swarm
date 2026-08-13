@@ -28,13 +28,8 @@ load_dotenv()
 
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL") + "/v1/chat/completions"
 LFM_MODEL_NAME = os.environ.get("LFM_MODEL_NAME")  # must match the model name in models.ini
-
-# NOTE: spec §4's "Critic ~700 tokens" context-window figure is an INPUT prompt
-# budget, not an output completion cap -- Critic's output is a variable-length
-# list of gap objects (each with a full-sentence description), not a fixed-shape
-# record like Scribe's ADR, so it needs meaningfully more room than the input
-# budget number to avoid truncating mid-JSON.
 CRITIC_MAX_OUTPUT_TOKENS = int(os.environ.get("CRITIC_TOKEN_BUDGET"))
+CRITIC_HTTP_TIMEOUT_S = int(os.environ.get("CRITIC_HTTP_TIMEOUT_S"))
 
 CRITIC_SYSTEM_PROMPT = """You are the Critic agent in an architecture review pipeline.
 You play devil's advocate against a C4 System Context diagram and the ADR that explains it.
@@ -133,7 +128,7 @@ async def run_critic(
     }
 
     owns_client = client is None
-    client = client or httpx.AsyncClient(timeout=180.0)
+    client = client or httpx.AsyncClient(timeout=CRITIC_HTTP_TIMEOUT_S)
     try:
         response = await client.post(LLAMA_SERVER_URL, json=payload)
         
