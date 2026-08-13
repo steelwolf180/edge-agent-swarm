@@ -1,0 +1,40 @@
+{
+  "spec_version": 1,
+  "project_overview": {
+    "purpose": "",
+    "target_users": "",
+    "deployment_environment": ""
+  },
+  "functional_requirements": {
+    "core_features": [
+    ],
+    "key_user_flows": [
+      ],
+    "integration_points": [
+    ]
+  },
+  "non_functional_requirements": {
+    "performance": "",
+    "scalability": "",
+    "availability": "",
+    "security": "",
+    "observability": ""
+  },
+  "technical_constraints": {
+    "language_framework": [],
+    "existing_systems": [
+    ],
+    "budget_infra_limits": "",
+    "team_skillset": ""
+  },
+  "data_architecture": {
+    "data_sources": [
+    ],
+    "storage_requirements": "",
+    "data_flow": "Service Name -> Service Name -> Service Name -> Service Name -> Service Name -> Service Name -> Service Name -> Service Name -> Service Name",
+    "retention_compliance": ""
+  },
+  "open_questions": [
+    ""
+  ]
+}
