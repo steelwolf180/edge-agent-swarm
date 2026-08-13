@@ -76,6 +76,7 @@
     "Should the Agent Sidebar's edit/send/discard actions feed back into a fine-tuning or re-ranking loop, or remain purely observational for MVP?",
     "How is staleness detected and surfaced? is a doc-changed webhook from Confluence/Zendesk sufficient, or does re-embedding need a periodic full-corpus reconciliation pass to catch missed events?",
     "Evaluation Service's 'frequently retrieved but rarely helpful' signal needs a minimum sample size per chunk to be statistically meaningful?",
-    "What's the cold-start behavior for newly-ingested docs that haven't accumulated enough query volume to evaluate yet?"
+    "What's the cold-start behavior for newly-ingested docs that haven't accumulated enough query volume to evaluate yet?",
+    "To improve the latency of the system, should we consider caching the top-k retrieved chunks of popular queries using sqlite or redis?"
   ]
 }
