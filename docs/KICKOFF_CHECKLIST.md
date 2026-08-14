@@ -423,6 +423,56 @@ Do NOT attempt §9 (Paper Trail) or spec bumping until this addendum is
 clear — nothing should hit the versioned artifact store with a known
 fabrication bug still open.
 
+**Re-run (14 Aug 2026, workflow `726ed8f9-7189-4594-9cb7-5ad43c310228`,
+`tests/simulated/cloud_rag.json`) — rejected. Partial progress, P0 not closed:**
+
+- [x] Exact-match guard shipped and confirmed firing in the log:
+  `WARNING: Scribe output for ['consequences', 'diff_summary'] exactly
+  matches a worked-example string from the system prompt`. Confirms the
+  guard mechanism itself works — flags inline, salvages, doesn't blind-retry
+  at temp=0.05 (retrying would likely just reproduce the same copy).
+- [ ] **P0 NOT closed — guard has a coverage gap.** The `decision` field is
+  not in the guarded field list and came through as unflagged, verbatim
+  worked-example text: *"Establish initial architecture: a glacier sensor
+  network integrating with Iridium satellite network and field base station
+  radio."* — has nothing to do with the cloud RAG spec being run. This is
+  the same fabrication failure mode as the original P0 finding, just now
+  half-caught instead of fully-caught. Two follow-ups, not one:
+  1. **Immediate patch:** add `decision` to the exact-match guarded-fields
+     list alongside `consequences`/`diff_summary`. Small, low-risk.
+  2. **Real fix, still open:** exact-match only catches verbatim copies of
+     the worked example. It won't catch paraphrased fabrication (the model
+     inventing plausible-sounding but ungrounded content in its own words).
+     The original planned fix — require grounding in spec/Researcher/
+     Architect output, explicit "no meaningful decision to record" fallback
+     on a zero-diff/creation run — is still the actual P0 item and is not
+     superseded by the exact-match guard landing.
+- [ ] **New: Critic truncation at `CRITIC_TOKEN_BUDGET=4096`, not previously
+  tracked.** Log shows `ValueError: Critic: LFM hit max_tokens (4096)
+  before finishing output` on attempt 1 against the 9-component
+  `cloud_rag.json` spec; DBOS auto-retried (attempt 2 of 3) and the retry
+  produced valid output (visible in the review doc). Distinct from the P2
+  distinctness bug (spofs/missing_integrations reworded from gaps) — this
+  is a straight budget truncation, same class as the original Scribe P1
+  truncation but on the Critic side. Not yet confirmed whether this is
+  component-count correlated (per the existing P1 hypothesis) or specific
+  to this spec's prompt length. Needs its own line item, not folded into
+  P2 — track separately since a retry masking it once doesn't mean it
+  won't fail all 3 attempts on a denser spec.
+- Reject notes filed: "Scribe decision field is fabricated verbatim
+  worked-example text (glacier sensor/Iridium), unrelated to spec and
+  unguarded by the new exact-match check, which only covers
+  consequences/diff_summary." — writes a `revision_cycles` row only, does
+  not touch the versioned artifact store (consistent with existing
+  rejection-path design, §7).
+
+§8.1 remains open. Do not proceed to §9 until: `decision` field is guarded
+(or the grounding-based P0 fix lands and makes the guard moot), Critic
+truncation is triaged as its own item (or explicitly folded into P1 once
+component-count correlation is confirmed either way), and a clean re-run
+against `cloud_rag.json` shows no fabricated/copied content in any of the
+three Scribe fields.
+
 ---
 
 ## 9. Paper Trail
