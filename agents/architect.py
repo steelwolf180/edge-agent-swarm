@@ -162,6 +162,34 @@ versa. On a diagram with many components, it is easy to introduce an
 entity in one section and forget to declare it in another — check for
 this specifically before finalizing your output.
 
+REL ENDPOINT SYNTAX RULE: every Rel(...) call takes exactly two element
+ids as its first two arguments, and each one MUST be a bare identifier —
+letters, digits, and underscores only, no spaces, no quotes — that
+exactly matches an id already declared on an earlier Person/System/
+System_Ext line. Never put a quoted string in a Rel(...) endpoint
+position, and never write a multi-word phrase there either. If you find
+yourself wanting to reference something like "the sidebar" or "the admin
+console" inside a Rel(...) call and it has no Person/System/System_Ext
+declaration of its own, that is a signal you have invented an entity —
+either declare it properly on its own line first, or drop the reference
+entirely. Remember this is an L1 System Context diagram: internal UI
+panels, dashboards, and sub-screens of a system you already declared
+(e.g. an "admin console" that is part of a system you called
+"support_chat") are L2 Container-level detail and MUST NOT appear as
+separate Rel(...) endpoints at all — describe that interaction, if
+relevant, as part of the existing System's relationship, not as a new
+element.
+
+WRONG (do not do this — invented, undeclared, malformed endpoints):
+    Rel(agent, "Agent Sidebar", "Uses assisted-answer interface")
+    Rel(Agent Sidebar, rag_system, "Submits queries to")
+Both lines reference "Agent Sidebar", which was never declared with its
+own Person/System/System_Ext line, once as a quoted string and once as
+an unquoted multi-word phrase — neither is a valid Rel(...) endpoint.
+CORRECT alternatives: either omit this sub-flow (it is L2-level, out of
+scope for L1), or express it via the already-declared System, e.g.:
+    Rel(agent, support_chat, "Uses assisted-answer sidebar within")
+
 In the COMPONENTS list, the "type" field must be exactly one of these three
 literal strings: "person", "internal_system", "external_system". Never use
 "system", "actor", "external", or any other variant — these are the only
@@ -209,16 +237,85 @@ def _normalize_diagram_linebreaks(diagram: str) -> str:
 _DECLARED_ID_RE = re.compile(
     r"\b(?:Person|System|System_Ext|SystemDb|SystemDb_Ext|SystemQueue|SystemQueue_Ext|Container|Boundary|System_Boundary|Enterprise_Boundary)\w*\(\s*([A-Za-z0-9_]+)"
 )
+# Kept for _repair_undeclared_ids below, which only ever attempts repair on
+# clean-but-undeclared ids -- malformed refs (quoted/multi-word) are handled
+# separately by _validate_diagram_ids, since there's no COMPONENTS entry a
+# quoted string or space-containing token could ever mechanically match.
 _REL_RE = re.compile(r"\bRel\w*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)")
+
+# Matches a full Rel(...) call's parenthesized argument list, so it can be
+# parsed properly rather than pattern-matched positionally. The old _REL_RE-
+# based validation only matched Rel calls where both endpoints were already
+# bare identifiers -- anything else (a quoted string used as an id, or an
+# unquoted multi-word token) simply failed to match and was silently
+# skipped, letting malformed endpoints reach mermaid.ink undetected.
+# Confirmed 13 Aug 2026: Gemma emitted Rel(agent, "Agent Sidebar", ...) and
+# Rel(Agent Sidebar, rag_system, ...) for an invented, never-declared
+# sub-component -- both invisible to the old regex -- and mermaid.ink's
+# renderer crashed on it ("Cannot read properties of undefined (reading 'x')")
+# instead of surfacing a clear error at the source.
+_REL_CALL_RE = re.compile(r"\bRel\w*\(([^)]*)\)")
+_BARE_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _split_top_level_args(arg_str: str) -> list[str]:
+    """Split a Rel(...) argument list on commas, respecting double-quoted
+    labels (which may themselves contain commas). Simple quote-toggle
+    scanner -- Mermaid C4 args don't use escaped quotes, so this doesn't
+    need to handle backslash-escaping."""
+    args: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    for ch in arg_str:
+        if ch == '"':
+            in_quotes = not in_quotes
+            current.append(ch)
+        elif ch == "," and not in_quotes:
+            args.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        args.append("".join(current).strip())
+    return args
+
 
 def _validate_diagram_ids(diagram: str) -> None:
     declared = set(_DECLARED_ID_RE.findall(diagram))
-    undefined = set()
-    for src, dst in _REL_RE.findall(diagram):
-        if src not in declared:
-            undefined.add(src)
-        if dst not in declared:
-            undefined.add(dst)
+    undefined: set[str] = set()
+    malformed: list[str] = []
+
+    for call in _REL_CALL_RE.finditer(diagram):
+        args = _split_top_level_args(call.group(1))
+        if len(args) < 2:
+            malformed.append(
+                f"{call.group(0)!r}: expected at least 2 arguments (source, target), got {len(args)}"
+            )
+            continue
+        src, dst = args[0], args[1]
+        for token, role in (("source", src), ("target", dst)):
+            if not _BARE_ID_RE.match(role):
+                malformed.append(
+                    f"{call.group(0)!r}: {token} {role!r} is not a bare identifier -- "
+                    f"a Rel(...) endpoint must exactly match an id already declared on "
+                    f"an earlier Person/System/System_Ext line, with no quotes and no "
+                    f"spaces. A quoted string or multi-word phrase here is almost always "
+                    f"an entity the model referenced but never declared."
+                )
+            elif role not in declared:
+                undefined.add(role)
+
+    # Malformed endpoints are reported first and separately from merely
+    # undeclared ones -- they're a different failure mode (invalid syntax
+    # vs. a missing declaration _repair_undeclared_ids might still fix) and
+    # conflating them into one undifferentiated id list would obscure which
+    # fix actually applies.
+    if malformed:
+        raise ValueError(
+            "Architect: diagram has malformed Rel(...) endpoint(s), not caught by "
+            "declaration repair because there's no valid id to repair:\n"
+            + "\n".join(f"  - {m}" for m in malformed)
+        )
     if undefined:
         raise ValueError(
             f"Architect: diagram has Rel(...) referencing undeclared element id(s): "
