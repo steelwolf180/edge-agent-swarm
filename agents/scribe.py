@@ -380,6 +380,46 @@ _COPY_SIMILARITY_THRESHOLD = 0.90
 _ARTICLE_RE = re.compile(r"\b(a|an|the)\b")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# DeepDiff's own internal category/bookkeeping tokens. These can never
+# legitimately appear in natural-English ADR prose, so (unlike example-
+# copying, which needs a similarity threshold) a plain substring check is
+# fully reliable here with zero false-positive risk -- same backstop class
+# as _coerce_adr_string_fields(), not a judgment call.
+#
+# Added after the SCRIBE_SYSTEM_PROMPT rule prohibiting this (13 Aug fix)
+# was confirmed to have no effect on a same-spec re-run (workflow
+# 7570a555-...): "decision" and "diff_summary" came back byte-identical
+# to the pre-fix output, still containing "dictionary_item_added" verbatim,
+# at temperature=0.05 (deterministic, not sampling noise a retry would
+# route around). One clean failure of a prompt-only fix on a fully
+# unambiguous pattern is enough to justify a boundary backstop immediately,
+# rather than burning further ~5-6 min pipeline runs testing prompt wording
+# iterations -- same reasoning already applied to the example-copying guard.
+_DIFF_SYNTAX_TOKENS = (
+    "dictionary_item_added",
+    "dictionary_item_removed",
+    "iterable_item_added",
+    "iterable_item_removed",
+    "values_changed",
+    "type_changes",
+)
+
+
+def _detect_diff_syntax_leak(parsed: dict) -> list[str]:
+    """Flags any of decision/consequences/diff_summary that leak DeepDiff's
+    internal category tokens verbatim, instead of paraphrasing the change
+    in plain English. See _DIFF_SYNTAX_TOKENS for why this is a safe plain
+    substring check rather than a fuzzy-match judgment call."""
+    leaked = []
+    for field in ("decision", "consequences", "diff_summary"):
+        value = parsed.get(field)
+        if not isinstance(value, str):
+            continue
+        lowered = value.lower()
+        if any(token in lowered for token in _DIFF_SYNTAX_TOKENS):
+            leaked.append(field)
+    return leaked
+
 
 def _normalize_for_comparison(text: str) -> str:
     """Lowercase, strip articles, and collapse whitespace before a fuzzy
@@ -596,6 +636,21 @@ async def run_scribe(
         for field in copied_fields:
             parsed[field] = f"POSSIBLE EXAMPLE COPY -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
         salvage_reason = salvage_reason or "example_copied"
+
+    leaked_fields = _detect_diff_syntax_leak(parsed)
+    if leaked_fields:
+        print(
+            f"WARNING: Scribe output for {leaked_fields} contains DeepDiff's "
+            f"internal category syntax (e.g. 'dictionary_item_added') "
+            f"verbatim instead of plain-English paraphrase, despite the "
+            f"system prompt explicitly prohibiting this. Flagging inline "
+            f"rather than retrying, since temperature=0.05 makes an "
+            f"identical retry likely to reproduce the same leak (confirmed "
+            f"on workflow 7570a555-...)."
+        )
+        for field in leaked_fields:
+            parsed[field] = f"POSSIBLE DIFF-SYNTAX LEAK -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
+        salvage_reason = salvage_reason or "diff_syntax_leaked"
 
     if salvage_reason:
         # Not part of ADROutput's schema -- logged, not persisted, so it can't
