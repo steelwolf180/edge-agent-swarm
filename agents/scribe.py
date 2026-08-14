@@ -57,20 +57,21 @@ FORMATTING RULES (all fields):
 
 Worked examples:
 
-IMPORTANT ABOUT THESE EXAMPLES: they illustrate FORMAT ONLY. Their entity names, service
-names, and topics are deliberately arbitrary placeholders, not templates to reuse. If any
-example's specific wording (e.g. a service name or decision topic) appears in your actual
-output but does NOT also appear verbatim in the real "Spec diff" section given to you below,
-you have copied the example instead of grounding your answer in the real diff -- this is the
-same critical error as inventing content from nothing, and is exactly as unacceptable.
+IMPORTANT ABOUT THESE EXAMPLES: they illustrate FORMAT ONLY, and are deliberately about a
+fictional glacier-monitoring sensor network -- a domain that will NEVER appear in a real
+architecture spec you are given. This is intentional: if any example's specific wording shows
+up in your actual output, it will be obviously, unmistakably wrong, because real specs in this
+pipeline are business systems (chat support, e-commerce, RAG, etc.), never glacier sensors.
+Copying an example's entity names, service names, or sentence content into your real output is
+exactly as unacceptable as inventing content from nothing -- treat any overlap as a sign you
+stopped reading the real "Spec diff" section and started reading this one instead.
 
 Example 1 -- one small, real diff entry present:
 Spec diff:
-- dictionary_item_added: functional_requirements.integration_points[2] -> added 'outbound webhook for shipment-tracking updates'
-Correct output: {"context": "L1 System Context", "decision": "Add an outbound webhook integration point for shipment-tracking updates.", "consequences": "The system gains a new outbound dependency on the shipment-tracking webhook consumer.", "diff_summary": "Added a shipment-tracking webhook integration point.", "affected_diagrams": ["context"]}
-(Every word traces to the diff line above. No unrelated topics introduced. If your real diff
-does not mention shipment tracking or webhooks, your output must not either -- this is a
-placeholder, not a hint.)
+- dictionary_item_added: functional_requirements.integration_points[2] -> added 'satellite uplink for glacier-sensor telemetry'
+Correct output: {"context": "L1 System Context", "decision": "Add a satellite uplink integration point for glacier-sensor telemetry.", "consequences": "The system gains a new outbound dependency on satellite uplink availability.", "diff_summary": "Added a satellite uplink integration point.", "affected_diagrams": ["context"]}
+(Every word traces to the diff line above. If your real diff does not mention satellites or
+glaciers, your output must not either -- this is a placeholder, not a hint.)
 
 Example 2 -- no diff (spec_version 1, or a re-submitted spec identical to the prior version):
 Spec diff:
@@ -86,17 +87,17 @@ you will see and the one most likely to tempt you toward a generic-sounding deci
 one grounded in what's actually listed):
 Spec diff:
 - dictionary_item_added: project_overview -> added (purpose, target_users, deployment_environment)
-- dictionary_item_added: functional_requirements.core_features -> added ['ticket deflection via chat', 'agent-assist sidebar']
-- dictionary_item_added: functional_requirements.integration_points -> added ['Zendesk', 'Confluence']
+- dictionary_item_added: functional_requirements.core_features -> added ['ice-thickness measurement', 'crevasse-drift alerting']
+- dictionary_item_added: functional_requirements.integration_points -> added ['Iridium satellite network', 'field base station radio']
 - dictionary_item_added: non_functional_requirements -> added (performance, scalability, availability, security, observability)
 - dictionary_item_added: technical_constraints -> added (language_framework, existing_systems, budget_infra_limits, team_skillset)
 - dictionary_item_added: data_architecture -> added (data_sources, storage_requirements, data_flow, retention_compliance)
-Correct output: {"context": "L1 System Context", "decision": "Establish the initial architecture: a chat-based support system integrating with Zendesk and Confluence.", "consequences": "All subsequent changes will be diffed against this baseline spec version.", "diff_summary": "Initial spec creation: core features, integrations (Zendesk, Confluence), and full requirement set established.", "affected_diagrams": ["context"]}
-(Pick out only what the real diff lines actually list -- here, Zendesk/Confluence and the two
-core features -- rather than reaching for a plausible-sounding but unlisted detail. Six
-top-level sections were added, but the decision only names what's specific and load-bearing,
-not every field. If your real diff lists different services or features, name those instead --
-never Zendesk or Confluence unless your real diff says so too.)
+Correct output: {"context": "L1 System Context", "decision": "Establish the initial architecture: a glacier sensor network integrating with the Iridium satellite network and a field base station radio.", "consequences": "All subsequent changes will be diffed against this baseline spec version.", "diff_summary": "Initial spec creation: core features, integrations (Iridium satellite network, field base station radio), and full requirement set established.", "affected_diagrams": ["context"]}
+(Pick out only what the real diff lines actually list -- here, the Iridium network and base
+station radio, and the two core features -- rather than reaching for a plausible-sounding but
+unlisted detail. Six top-level sections were added, but the decision only names what's specific
+and load-bearing, not every field. Your real diff will list real business-system services, not
+satellites or glaciers -- name those instead, and only those.)
 
 Respond with a single JSON object matching this schema, and nothing else:
 {"context": str, "decision": str, "consequences": str, "diff_summary": str, "affected_diagrams": ["context"]}
@@ -243,6 +244,54 @@ def _salvage_truncated_scribe_output(raw: str) -> dict:
 
 _MAX_COERCED_FIELD_CHARS = 300
 
+# Exact strings from SCRIBE_SYSTEM_PROMPT's worked-example "Correct output" values.
+# Confirmed twice (13 Aug: Stripe/payment example; 14 Aug: Zendesk/Confluence example)
+# that LFM reproduces a worked example's output verbatim instead of grounding in the
+# real diff, despite an explicit in-prompt instruction not to -- prompt-only fixes
+# have now failed identically twice, so this is a boundary-level backstop rather
+# than a third attempt at asking more firmly. Kept in sync manually with the
+# examples in SCRIBE_SYSTEM_PROMPT; if the examples change, update this set too.
+_EXAMPLE_OUTPUT_STRINGS = {
+    "Add a satellite uplink integration point for glacier-sensor telemetry.",
+    "The system gains a new outbound dependency on satellite uplink availability.",
+    "Added a satellite uplink integration point.",
+    "No meaningful decision to record: no spec changes were detected in this run.",
+    "None. No architectural change occurred, so no consequence follows.",
+    "No field-level changes detected.",  # legitimate for a genuine zero-diff run -- see note below
+    "Establish the initial architecture: a glacier sensor network integrating with the Iridium satellite network and a field base station radio.",
+    "All subsequent changes will be diffed against this baseline spec version.",
+    "Initial spec creation: core features, integrations (Iridium satellite network, field base station radio), and full requirement set established.",
+    # Prior example generations, kept in case any cached/older prompt is still in
+    # play somewhere -- costs nothing to keep checking for these too.
+    "Add a Stripe webhook integration point for payment confirmation.",
+    "The system gains an inbound external dependency on Stripe's webhook delivery.",
+    "Added a Stripe webhook integration point.",
+    "Establish the initial architecture: a chat-based support system integrating with Zendesk and Confluence.",
+    "Initial spec creation: core features, integrations (Zendesk, Confluence), and full requirement set established.",
+}
+
+
+def _detect_example_copying(parsed: dict, diff_summary: str) -> list[str]:
+    """Flags any of decision/consequences/diff_summary that exactly match a
+    worked-example output string. "No field-level changes detected." is
+    legitimate when the real diff actually was empty (Example 2's case) --
+    only flagged here if diff_summary itself doesn't match, i.e. the real
+    diff was non-empty but the model still emitted the empty-diff text."""
+    copied = []
+    for field in ("decision", "consequences", "diff_summary"):
+        value = parsed.get(field)
+        if not isinstance(value, str):
+            continue
+        stripped = value.strip()
+        if stripped != "No field-level changes detected." and stripped in _EXAMPLE_OUTPUT_STRINGS:
+            copied.append(field)
+        elif (
+            stripped == "No field-level changes detected."
+            and diff_summary.strip() != "No field-level changes detected."
+        ):
+            copied.append(field)
+    return copied
+
 
 def _coerce_adr_string_fields(parsed: dict) -> tuple[dict, list[str]]:
     """Defends against LFM returning a non-string value (dict/list) for a
@@ -367,6 +416,20 @@ async def run_scribe(
             f"failing the step."
         )
         salvage_reason = salvage_reason or "non_string_field"
+
+    copied_fields = _detect_example_copying(parsed, diff_summary)
+    if copied_fields:
+        print(
+            f"WARNING: Scribe output for {copied_fields} exactly matches a "
+            f"worked-example string from the system prompt -- the model "
+            f"appears to have copied the example instead of grounding in "
+            f"the real diff. Flagging inline rather than retrying, since "
+            f"temperature=0.05 makes an identical retry likely to reproduce "
+            f"the same copy."
+        )
+        for field in copied_fields:
+            parsed[field] = f"POSSIBLE EXAMPLE COPY -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
+        salvage_reason = salvage_reason or "example_copied"
 
     if salvage_reason:
         # Not part of ADROutput's schema -- logged, not persisted, so it can't
