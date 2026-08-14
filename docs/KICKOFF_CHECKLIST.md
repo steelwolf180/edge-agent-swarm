@@ -419,6 +419,16 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 6. Buffer / Architect technology fix if time remains — defer to next
    session if not
 
+**Status (14 Aug 2026):** step 1 is still in progress, not closed — see
+§8.1a/§8.1b below. The diff-decomposition root cause under P0/P1 is now
+confirmed and fixed (§8.1a), but the fix surfaced a second, previously-
+hidden grounding failure (§8.1b, diff-syntax leak) that a same-day prompt
+fix did not resolve; a detection backstop is in place but the underlying
+grounding behavior is still open. Steps 3–4 (Scribe truncation, Critic
+distinctness) not yet started. §8.1c is a new, unplanned item (Architect
+id-declaration recurrence) surfaced during today's re-runs — not part of
+the original 6-pomodoro scope, logged separately, not yet worked.
+
 Do NOT attempt §9 (Paper Trail) or spec bumping until this addendum is
 clear — nothing should hit the versioned artifact store with a known
 fabrication bug still open.
@@ -537,6 +547,122 @@ item itself:**
   one variable at a time per session-plan discipline.
 - Critic truncation item (above) unchanged, still open, not touched by
   this fix.
+
+---
+
+## 8.1a Diff-Decomposition Fix (14 Aug 2026)
+
+Follow-up to the "suspected deeper root cause" note directly above — confirmed
+and fixed, not just inferred.
+
+- [x] **Root cause confirmed via direct DeepDiff testing** (not read from
+  docs): `DeepDiff({}, populated_dict)` only emits clean per-key
+  `dictionary_item_added` entries when a *single* top-level key is added
+  against an empty baseline. The moment 2+ top-level keys are added, it
+  collapses the whole comparison into one root-level `values_changed`
+  entry instead. Every real creation run (`prior_spec=None`) hits this,
+  since `compute_spec_diff()`'s baseline is always `{}` in that case — a
+  quirk of a *completely empty* starting dict, not a general DeepDiff bug.
+  This is the leading (now confirmed) explanation for why Scribe kept
+  reaching for Example 3 wholesale: the model was primed on clean
+  per-section bullets but shown one giant dict-repr blob instead.
+- [x] `agents/scribe.py::summarize_creation_diff()` added — for
+  `prior_spec=None` only, bypasses `compute_spec_diff()`/DeepDiff entirely
+  and builds the same `dictionary_item_added: <section> -> added (...)` /
+  `<section>.<list> -> added [...]` bullet shape directly from
+  `current_spec.model_dump()`. Incremental diffs (`prior_spec` present)
+  untouched — DeepDiff already produces clean per-field entries once the
+  baseline has real content (confirmed working, `diff_hunk_count=1` on the
+  6 Aug `spec_v2.json` run).
+- [x] **Confirmed via real run** (workflow `1fd6ff3f-...`, `cloud_rag.json`):
+  log shows `hunk_count=11`, eight clean per-section bullets, zero
+  collapsed blob, zero glacier/satellite leakage. The specific bug this
+  section targeted is fixed.
+
+## 8.1b Diff-Syntax Leak — New Bug Surfaced by the Fix Above (14 Aug 2026)
+
+The clean bullets exposed a second, previously-invisible failure mode:
+Scribe echoing the diff's own internal syntax tokens verbatim instead of
+paraphrasing.
+
+- [ ] **Not yet actually fixed.** Symptom, both `1fd6ff3f-...` and
+  `7570a555-...` (same spec, two separate runs): `decision`/`diff_summary`
+  came back as `"Add a dictionary_item_added for project_overview: added
+  (purpose, target_users, deployment_environment)."` — the model treated
+  DeepDiff's bookkeeping label (`dictionary_item_added`, the `->` arrow,
+  the `added (...)` wrapper) as English content to restate, rather than a
+  structural marker to read past. `1fd6ff3f-...`'s `consequences` also
+  pulled an S3 dependency mention from **Blackboard context** (Researcher's
+  pricing summary) even though S3 never appears in the diff — traced to a
+  self-contradiction in `SCRIBE_SYSTEM_PROMPT`'s grounding rule, which said
+  "ONLY the Spec diff" in one sentence and then explicitly permitted
+  "Spec diff or Blackboard context" in the next.
+- [x] **Prompt fix attempt (`agents/scribe.py`, `SCRIBE_SYSTEM_PROMPT`):**
+  removed the Blackboard-context grounding loophole; added an explicit
+  "DIFF FORMAT IS NOT CONTENT" rule naming the exact banned tokens
+  (`dictionary_item_added`, `values_changed`, `iterable_item_added`, the
+  `->` arrow, `added (...)`/`added [...]`) with a worked before/after
+  example using this run's own project_overview bullet.
+- [ ] **Confirmed NOT effective on re-run** (workflow `7570a555-...`, same
+  spec, same temperature=0.05): `decision` and `diff_summary` came back
+  **byte-identical** to the pre-fix output — still containing
+  `dictionary_item_added` verbatim. `consequences` was independently
+  flagged by the existing example-copy guard as a verbatim copy of
+  **Example 1**'s text ("...outbound dependency on satellite uplink
+  availability.") — not even Example 3 (the creation-diff example), just
+  whichever worked example the model reached for. One clean, deterministic
+  failure of the prompt-only fix on a fully unambiguous pattern.
+- [x] **Boundary backstop added** (`agents/scribe.py`):
+  `_detect_diff_syntax_leak()` — plain substring check for DeepDiff's
+  internal category tokens (`dictionary_item_added`,
+  `dictionary_item_removed`, `iterable_item_added`, `iterable_item_removed`,
+  `values_changed`, `type_changes`) across `decision`/`consequences`/
+  `diff_summary`, flagged inline as `"POSSIBLE DIFF-SYNTAX LEAK -- FLAG FOR
+  HUMAN REVIEW: ..."` rather than retried (same reasoning as the example-
+  copy guard: temp=0.05 retry would likely reproduce the same leak).
+  Unlike the fuzzy example-copy check, this is a safe plain substring match
+  with no false-positive risk — these tokens can never legitimately appear
+  in English ADR prose — so it was added immediately after one confirmed
+  prompt-fix failure rather than waiting for a second, matching the
+  severity of a fully deterministic, unambiguous pattern rather than a
+  judgment call.
+- **Still open, not superseded by the guard landing:** the guard is
+  detection-layer only, not the grounding fix. Two same-spec creation-diff
+  runs in a row both show Scribe defaulting to shallow copy behavior on
+  this diff shape — grabbing the first (least substantive) bullet for
+  `decision`/`diff_summary`, and reaching for an unrelated worked example
+  for `consequences` rather than synthesizing from the real diff at all.
+  Worth treating as an open question about whether this is a wording
+  problem or an attention/capacity limitation on `cloud_rag.json`'s
+  11-hunk diff specifically, not assumed closed by either fix so far.
+
+**Rejected runs, this thread:**
+- `1fd6ff3f-5371-4520-b016-05426483ae12` — rejected: diff-syntax echo in
+  decision/diff_summary; consequences leaked S3 from Blackboard context
+  (not in the diff).
+- `7570a555-c13e-475e-9359-8df3a7383db9` — rejected: diff-syntax echo
+  persisted unchanged after the prompt fix; consequences independently
+  flagged by the example-copy guard as a verbatim Example 1 copy.
+
+## 8.1c Architect: `_validate_diagram_ids` Recurrence (14 Aug 2026, workflow `7570a555-...`)
+
+Reopens the 4 Aug §8 item that was closed as "held clean on the next run,
+but sample size still too small to call confirmed" — this run is that
+confirmation, and it says the fix isn't holding.
+
+- [ ] **Not fixed.** `architect_step` retried twice before succeeding
+  (17:20:32 → 17:37:27, ~17 min vs. the normal ~5-6 min compute for this
+  step): attempt 1's `Rel(...)` referenced `agentSidebar`, undeclared
+  against a camelCase id scheme (`adminConsole`, `docsTeam`, ...); attempt
+  2's `Rel(...)` referenced `postgresql`, undeclared against a *different*,
+  snake_case id scheme (`admin_console`, `agent_sidebar`, ...) on the same
+  spec. Two failures in one run, two different id-casing conventions —
+  suggests the model isn't holding a stable id vocabulary across the
+  diagram generation at all, not just occasionally forgetting one
+  declaration.
+- Logged as its own item, separate from §8.1's Scribe/Critic bugs (Gemma/
+  Architect, not LFM/Scribe) — not yet worked. Next pomodoro candidate,
+  not bundled into the current Scribe session per one-variable-at-a-time.
 
 ---
 
