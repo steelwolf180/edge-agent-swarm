@@ -471,12 +471,12 @@ async def run_scribe(
     copied_fields = _detect_example_copying(parsed, diff_summary)
     if copied_fields:
         print(
-            f"WARNING: Scribe output for {copied_fields} exactly matches a "
-            f"worked-example string from the system prompt -- the model "
-            f"appears to have copied the example instead of grounding in "
-            f"the real diff. Flagging inline rather than retrying, since "
-            f"temperature=0.05 makes an identical retry likely to reproduce "
-            f"the same copy."
+            f"WARNING: Scribe output for {copied_fields} closely matches "
+            f"(exact or near-verbatim) a worked-example string from the "
+            f"system prompt -- the model appears to have copied the example "
+            f"instead of grounding in the real diff. Flagging inline rather "
+            f"than retrying, since temperature=0.05 makes an identical "
+            f"retry likely to reproduce the same copy."
         )
         for field in copied_fields:
             parsed[field] = f"POSSIBLE EXAMPLE COPY -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
