@@ -261,6 +261,19 @@ async def run_scribe(
     diff_summary = summarize_diff(diff)
     hunk_count = hunk_count_from_diff(diff)
 
+    # Auditability, not behavior: the only record of what Scribe was actually
+    # shown used to be its own restated diff_summary field in the output --
+    # which is exactly the thing in question when fabrication is suspected.
+    # Logging the real diff text here means a future "is this grounded?"
+    # question can be answered by reading the run log instead of re-deriving
+    # prior_spec from memory or guessing at the invocation, as happened for
+    # workflow 6b8a7752 (13 Aug 2026) where "no --prior-spec was passed" had
+    # to be confirmed after the fact via the human who ran it.
+    print(
+        f"INFO: Scribe diff fed to prompt (prior_spec={'present' if prior_spec else 'None (creation diff)'}, "
+        f"hunk_count={hunk_count}):\n{diff_summary}"
+    )
+
     payload = {
         "model": LFM_MODEL_NAME,
         "messages": [
