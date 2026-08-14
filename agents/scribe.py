@@ -189,6 +189,91 @@ def hunk_count_from_diff(diff: DeepDiff) -> int:
     costs nothing against Scribe's ~800 token input budget."""
     return sum(len(items) for items in diff.to_dict().values())
 
+
+def _non_empty_field_names(section: dict) -> list[str]:
+    """Names (not values) of fields in a section dict that actually hold
+    content -- mirrors Example 3's 'project_overview -> added (purpose,
+    target_users, deployment_environment)' bullet, which only makes sense
+    to emit for fields that were actually populated."""
+    return [k for k, v in section.items() if v not in (None, "", [], {})]
+
+
+def summarize_creation_diff(
+    current_spec: ArchitectureSpec, max_items: int = 8
+) -> tuple[str, int]:
+    """Build the diff summary for a *creation* diff (prior_spec=None,
+    spec_version 1) directly from current_spec, bypassing
+    compute_spec_diff()/DeepDiff entirely for this one case.
+
+    Root cause (confirmed by direct DeepDiff testing, not inference):
+    DeepDiff({}, populated_dict) only emits per-key 'dictionary_item_added'
+    entries when a single top-level key is added. The moment 2+ top-level
+    keys are added against a *completely empty* dict baseline, DeepDiff
+    collapses the whole comparison into one 'values_changed: root ->
+    changed from {} to {...huge dict...}' entry instead -- a quirk of an
+    empty starting dict specifically, not a bug in how this diff is
+    invoked. Every real creation run (prior_spec=None) hits this, since
+    compute_spec_diff()'s baseline is always {} in that case.
+
+    This is the leading hypothesis for the persistent fabrication/example-
+    copying failure (KICKOFF_CHECKLIST §8.1): SCRIBE_SYSTEM_PROMPT's
+    Example 3 trains the model to expect clean, per-section
+    'dictionary_item_added: <section> -> added (...)' bullets on a
+    creation diff, but the model was actually being shown one giant
+    root-level dict-repr blob -- a shape it had never been primed on -- so
+    it fell back to pattern-matching the nearest thing it *had* seen
+    worked-example output for for: Example 3 itself, verbatim or near-
+    verbatim. Constructing the bullets directly from current_spec, in the
+    same shape Example 3 uses, removes that shape mismatch at its source
+    rather than only detecting the copy after the fact.
+
+    Returns (summary_text, hunk_count). hunk_count is unbounded by
+    max_items (same contract as hunk_count_from_diff()) since it feeds
+    Judge's adrs_per_diff metric, not the prompt.
+    """
+    dump = current_spec.model_dump()
+    bullets: list[str] = []
+
+    for key, value in dump.items():
+        if value in (None, "", [], {}):
+            continue
+
+        if isinstance(value, list):
+            bullets.append(f"dictionary_item_added: {key} -> added {value!r}")
+            continue
+
+        if isinstance(value, dict):
+            # Non-empty nested lists get their own bullet (mirrors Example
+            # 3's functional_requirements.core_features /
+            # .integration_points bullets); remaining non-empty scalar
+            # subfields are named together in one bullet (mirrors Example
+            # 3's 'project_overview -> added (purpose, ...)' bullet).
+            list_subfields = {
+                k: v for k, v in value.items() if isinstance(v, list) and v
+            }
+            for subkey, sublist in list_subfields.items():
+                bullets.append(
+                    f"dictionary_item_added: {key}.{subkey} -> added {sublist!r}"
+                )
+
+            remaining = {k: v for k, v in value.items() if k not in list_subfields}
+            named_fields = _non_empty_field_names(remaining)
+            if named_fields:
+                bullets.append(
+                    f"dictionary_item_added: {key} -> added ({', '.join(named_fields)})"
+                )
+            continue
+
+        # Bare top-level scalar -- not expected in the current schema shape,
+        # but handled explicitly rather than silently dropped.
+        bullets.append(f"dictionary_item_added: {key} -> added {value!r}")
+
+    hunk_count = len(bullets)
+    summary = (
+        "\n".join(bullets[:max_items]) if bullets else "No field-level changes detected."
+    )
+    return summary, hunk_count
+
 def build_user_prompt(diff_summary: str, blackboard_context: str) -> str:
     return (
         f"Spec diff:\n{diff_summary}\n\n"
@@ -384,9 +469,22 @@ async def run_scribe(
     blackboard_context: str,
     client: httpx.AsyncClient | None = None,
 ) -> ADROutput:
-    diff = compute_spec_diff(prior_spec, current_spec)
-    diff_summary = summarize_diff(diff)
-    hunk_count = hunk_count_from_diff(diff)
+    # Route creation diffs (prior_spec=None) through summarize_creation_diff()
+    # instead of compute_spec_diff()/DeepDiff -- see that function's
+    # docstring for why: DeepDiff({}, populated_dict) collapses to one
+    # root-level values_changed blob rather than the clean per-section
+    # bullets SCRIBE_SYSTEM_PROMPT's Example 3 primes the model to expect,
+    # which is the leading hypothesis for the persistent fabrication/
+    # example-copying behavior on every cloud_rag.json creation run
+    # (§8.1). Incremental diffs (prior_spec present) are unaffected --
+    # DeepDiff already produces clean per-field entries once the baseline
+    # has real content -- so that path is untouched.
+    if prior_spec is None:
+        diff_summary, hunk_count = summarize_creation_diff(current_spec)
+    else:
+        diff = compute_spec_diff(prior_spec, current_spec)
+        diff_summary = summarize_diff(diff)
+        hunk_count = hunk_count_from_diff(diff)
 
     # Auditability, not behavior: the only record of what Scribe was actually
     # shown used to be its own restated diff_summary field in the output --
