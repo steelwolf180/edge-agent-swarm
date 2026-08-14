@@ -473,6 +473,71 @@ component-count correlation is confirmed either way), and a clean re-run
 against `cloud_rag.json` shows no fabricated/copied content in any of the
 three Scribe fields.
 
+**Correction to the entry above:** `decision` was never actually missing
+from the guarded-fields list — `agents/scribe.py`'s `_detect_example_copying()`
+already checked `("decision", "consequences", "diff_summary")`, all three.
+The prior write-up inferred a coverage gap from the log line alone (only 2
+of 3 fields printed as flagged) without having read the code; the real
+mechanism was different and is corrected below.
+
+**Fix implemented (14 Aug 2026) — near-verbatim (fuzzy) match, not a
+field-list gap:**
+
+- [x] Root cause confirmed: the model's fabricated `decision` text dropped
+  three articles ("the", "the", "a") relative to the worked-example string
+  — 96% similar by raw character comparison, but not byte-identical — so it
+  passed the old exact string-membership check (`stripped in
+  _EXAMPLE_OUTPUT_STRINGS`) while `consequences`/`diff_summary` (copied
+  verbatim) were correctly caught. Not a temperature/sampling issue —
+  confirmed reproducible at temp=0.05, i.e. deterministic near-copying, not
+  noise a resample would avoid.
+- [x] `_detect_example_copying()` rewritten: normalizes case/whitespace/
+  articles, then compares via `difflib.SequenceMatcher` at a 0.90
+  similarity threshold instead of exact equality. `"No field-level changes
+  detected."` special-case (legitimate on a real zero-diff run) left
+  unchanged.
+- [x] Sanity-checked before shipping: the actual fabricated `decision` text
+  normalizes to a 100% match (correctly flagged); two genuinely different,
+  real-content decision strings (RAG-specific, Stripe-specific) scored
+  0.60 and 0.30 (correctly pass through unflagged) — threshold doesn't
+  appear to over-fire on legitimate content.
+- [x] **Re-run confirmation (workflow `6a7953f7-3494-4654-a69a-2b0422e46b0c`,
+  same spec):** all three fields — `decision`, `consequences`,
+  `diff_summary` — now flagged: `WARNING: Scribe output for ['decision',
+  'consequences', 'diff_summary'] closely matches...`. `decision` is
+  correctly caught this time. Rejected per the same reasoning as
+  `726ed8f9` — a guard correctly firing is not grounds to approve, it's
+  the guard doing its job.
+- [x] Log message wording fixed: was "exactly matches a worked-example
+  string", which became inaccurate once the check also fires on
+  near-verbatim matches (as it did for `decision` on this run). Now reads
+  "closely matches (exact or near-verbatim)".
+
+**Still open — this fix closes the specific evasion found, not the P0
+item itself:**
+
+- The fuzzy-match guard is still a detection-layer backstop, not the
+  grounding fix. It only catches output that's *structurally* the same
+  sentence as a worked example (exact or near-verbatim). It will not catch
+  fabricated content that's topically similar but reworded enough to score
+  below 0.90 — that class of failure still depends entirely on the
+  prompt's CRITICAL GROUNDING RULE / CRITICAL NO-DIFF RULE holding up on
+  their own, which is not yet independently confirmed since every observed
+  fabrication so far has been a near-copy of Example 3, not a novel
+  paraphrase.
+- Suspected deeper root cause, still untouched: `compute_spec_diff`/
+  `summarize_diff` collapses a creation-diff (`prior_spec=None`) into a
+  single `values_changed: root -> changed from {} to {...huge dict...}`
+  line, not the clean per-field `dictionary_item_added` bullets Example 3
+  in the prompt implicitly trains the model to expect. This mismatch
+  between what the model is shown and what the worked example primes it
+  for is the leading hypothesis for why the model keeps reaching for
+  Example 3 wholesale on every creation-diff run against `cloud_rag.json`,
+  rather than this being a one-off. Not yet fixed — next candidate item,
+  one variable at a time per session-plan discipline.
+- Critic truncation item (above) unchanged, still open, not touched by
+  this fix.
+
 ---
 
 ## 9. Paper Trail
