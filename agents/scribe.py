@@ -11,6 +11,8 @@ import os
 import httpx
 import re
 
+from difflib import SequenceMatcher
+
 from deepdiff import DeepDiff
 from pydantic import ValidationError
 
@@ -271,25 +273,74 @@ _EXAMPLE_OUTPUT_STRINGS = {
 }
 
 
+_COPY_SIMILARITY_THRESHOLD = 0.90
+
+_ARTICLE_RE = re.compile(r"\b(a|an|the)\b")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_for_comparison(text: str) -> str:
+    """Lowercase, strip articles, and collapse whitespace before a fuzzy
+    compare.
+
+    Confirmed on workflow 726ed8f9 (14 Aug 2026): the model reproduced
+    Example 3's "decision" string with only three words dropped ("the",
+    "the", "a" -- articles), which is 96% similar by SequenceMatcher on the
+    raw strings but NOT an exact match, so it silently passed the old
+    exact-match check while consequences/diff_summary (copied verbatim)
+    got caught. Article-stripping means this specific evasion collapses to
+    an exact normalized match rather than merely a high ratio, but the
+    ratio check below is kept as the general backstop for other kinds of
+    near-verbatim drift (a swapped word, a dropped clause, etc.).
+    """
+    text = _WHITESPACE_RE.sub(" ", text.strip().lower())
+    text = _ARTICLE_RE.sub("", text)
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
 def _detect_example_copying(parsed: dict, diff_summary: str) -> list[str]:
-    """Flags any of decision/consequences/diff_summary that exactly match a
-    worked-example output string. "No field-level changes detected." is
-    legitimate when the real diff actually was empty (Example 2's case) --
-    only flagged here if diff_summary itself doesn't match, i.e. the real
-    diff was non-empty but the model still emitted the empty-diff text."""
+    """Flags any of decision/consequences/diff_summary that closely match a
+    worked-example output string -- exact OR near-verbatim (>=90% similar
+    after normalizing case/whitespace/articles).
+
+    Widened from exact-match (13-14 Aug fix) after confirming the model can
+    evade a strict string check by dropping a handful of articles while
+    reproducing an example's content and sentence structure otherwise
+    unchanged. This is still a narrow backstop, not general paraphrase
+    detection -- it only catches output that is *structurally* the same
+    sentence as a worked example, which is what "copied the example instead
+    of grounding in the diff" looks like. It will not catch genuinely novel
+    fabricated content that merely echoes the example's *topic* (glaciers,
+    satellites) in different words; that class of failure still depends on
+    the prompt's grounding rules holding.
+
+    "No field-level changes detected." is legitimate when the real diff
+    actually was empty (Example 2's case) -- only flagged here if
+    diff_summary itself doesn't match, i.e. the real diff was non-empty but
+    the model still emitted the empty-diff text.
+    """
     copied = []
     for field in ("decision", "consequences", "diff_summary"):
         value = parsed.get(field)
         if not isinstance(value, str):
             continue
         stripped = value.strip()
-        if stripped != "No field-level changes detected." and stripped in _EXAMPLE_OUTPUT_STRINGS:
-            copied.append(field)
-        elif (
-            stripped == "No field-level changes detected."
-            and diff_summary.strip() != "No field-level changes detected."
-        ):
-            copied.append(field)
+
+        if stripped == "No field-level changes detected.":
+            if diff_summary.strip() != "No field-level changes detected.":
+                copied.append(field)
+            continue
+
+        normalized = _normalize_for_comparison(stripped)
+        for example in _EXAMPLE_OUTPUT_STRINGS:
+            if example == "No field-level changes detected.":
+                continue  # handled above; legitimate on a real zero-diff run
+            ratio = SequenceMatcher(
+                None, normalized, _normalize_for_comparison(example)
+            ).ratio()
+            if ratio >= _COPY_SIMILARITY_THRESHOLD:
+                copied.append(field)
+                break
     return copied
 
 
