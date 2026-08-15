@@ -78,29 +78,33 @@ FORMATTING RULES (all fields):
 
 Worked examples:
 
-IMPORTANT ABOUT THESE EXAMPLES: they illustrate FORMAT ONLY, and are deliberately about a
-fictional glacier-monitoring sensor network -- a domain that will NEVER appear in a real
-architecture spec you are given. This is intentional: if any example's specific wording shows
-up in your actual output, it will be obviously, unmistakably wrong, because real specs in this
-pipeline are business systems (chat support, e-commerce, RAG, etc.), never glacier sensors.
-Copying an example's entity names, service names, or sentence content into your real output is
-exactly as unacceptable as inventing content from nothing -- treat any overlap as a sign you
-stopped reading the real "Spec diff" section and started reading this one instead.
+IMPORTANT ABOUT THESE EXAMPLES: every bracketed [SLOT] below describes what belongs there -- it
+is not literal text, and if your real output still contains a square bracket you have failed to
+fill in a slot. These examples contain no invented service names, company names, or business
+content in any domain, on purpose. Earlier versions of this prompt used a fictional
+glacier-monitoring domain instead, on the theory that any leak of it into real output would be
+obviously wrong -- but the model reproduced that fictional domain's exact wording into real
+output anyway (confirmed workflow 3303ce31-...), after two earlier real-domain example versions
+(Stripe/payment, then Zendesk/Confluence) leaked the same way before that. Concrete example
+content -- fictional or real, on-topic or not -- is something this model has repeatedly copied
+instead of grounding in the real diff, so these examples now show structure only, with nothing
+concrete left to copy. Every noun in your real output must come from the real "Spec diff"
+section given to you below, because there is nothing else it could legitimately come from.
 
 Example 1 -- one small, real diff entry present:
 Spec diff:
-- Added functional_requirements.integration_points[2]: satellite uplink for glacier-sensor telemetry
-Correct output: {"context": "L1 System Context", "decision": "Add a satellite uplink integration point for glacier-sensor telemetry.", "consequences": "The system gains a new outbound dependency on satellite uplink availability.", "diff_summary": "Added a satellite uplink integration point.", "affected_diagrams": ["context"]}
-(Every word traces to the diff line above. If your real diff does not mention satellites or
-glaciers, your output must not either -- this is a placeholder, not a hint.)
+- Added functional_requirements.integration_points[2]: [your real diff line will name one real integration here]
+Correct output shape: {"context": "L1 System Context", "decision": "[one sentence, <=25 words, naming only the specific item your real diff line above added]", "consequences": "[one sentence: the concrete new dependency or effect that follows from that addition]", "diff_summary": "[short paraphrase of your real diff line above, not its field-path syntax]", "affected_diagrams": ["context"]}
+(Every word in your real answer traces to your real diff line, whatever it says -- not to this
+placeholder text.)
 
 Example 2 -- no diff (spec_version 1, or a re-submitted spec identical to the prior version):
 Spec diff:
 No field-level changes detected.
 Correct output: {"context": "L1 System Context", "decision": "No meaningful decision to record: no spec changes were detected in this run.", "consequences": "None. No architectural change occurred, so no consequence follows.", "diff_summary": "No field-level changes detected.", "affected_diagrams": ["context"]}
-(Even though the blackboard context below may describe a rich system with a RAG pipeline, retrieval
-service, etc., none of that is a *change*, so none of it appears in "decision". This is correct
-even though it looks like a "boring" answer -- a boring correct answer beats an invented one.)
+(This exact answer is correct even if the blackboard context below describes a rich, detailed
+system -- none of that is a *change*, so none of it belongs in "decision". A boring correct
+answer beats an invented one.)
 
 Example 3 -- large creation diff (spec_version 1, no prior spec at all -- baseline is empty, so
 EVERY field in the current spec shows up as a change; this is the most common real-world case
@@ -108,17 +112,17 @@ you will see and the one most likely to tempt you toward a generic-sounding deci
 one grounded in what's actually listed):
 Spec diff:
 - Added project_overview: purpose, target_users, deployment_environment
-- Added functional_requirements.core_features: ['ice-thickness measurement', 'crevasse-drift alerting']
-- Added functional_requirements.integration_points: ['Iridium satellite network', 'field base station radio']
+- Added functional_requirements.core_features: [your real diff lists the actual core features here]
+- Added functional_requirements.integration_points: [your real diff lists the actual integrations here]
 - Added non_functional_requirements: performance, scalability, availability, security, observability
 - Added technical_constraints: language_framework, existing_systems, budget_infra_limits, team_skillset
 - Added data_architecture: data_sources, storage_requirements, data_flow, retention_compliance
-Correct output: {"context": "L1 System Context", "decision": "Establish the initial architecture: a glacier sensor network integrating with the Iridium satellite network and a field base station radio.", "consequences": "All subsequent changes will be diffed against this baseline spec version.", "diff_summary": "Initial spec creation: core features, integrations (Iridium satellite network, field base station radio), and full requirement set established.", "affected_diagrams": ["context"]}
-(Pick out only what the real diff lines actually list -- here, the Iridium network and base
-station radio, and the two core features -- rather than reaching for a plausible-sounding but
-unlisted detail. Six top-level sections were added, but the decision only names what's specific
-and load-bearing, not every field. Your real diff will list real business-system services, not
-satellites or glaciers -- name those instead, and only those.)
+Correct output shape: {"context": "L1 System Context", "decision": "[one sentence naming only the specific core features and integration points your real diff bullets above actually list -- not every section name, just what's specific and load-bearing]", "consequences": "All subsequent changes will be diffed against this baseline spec version.", "diff_summary": "[short paraphrase: core features established, the named integrations, and the full requirement set added]", "affected_diagrams": ["context"]}
+(Six top-level sections were added here, but "decision" only names what's specific and
+load-bearing from YOUR real diff -- the actual core features and integrations you were given,
+never a placeholder and never wording from a different run. Everything inside a bracket above
+must be replaced with real content from your own diff, and nothing inside a bracket should ever
+survive into your output verbatim.)
 
 Respond with a single JSON object matching this schema, and nothing else:
 {"context": str, "decision": str, "consequences": str, "diff_summary": str, "affected_diagrams": ["context"]}
@@ -470,6 +474,30 @@ def _detect_diff_syntax_leak(parsed: dict) -> list[str]:
     return leaked
 
 
+# Introduced alongside the switch to bracketed [SLOT] worked examples (15 Aug
+# 2026 fix, replacing the third leaked concrete-domain example in a row --
+# see SCRIBE_SYSTEM_PROMPT's "IMPORTANT ABOUT THESE EXAMPLES" note). That
+# change trades "the model has a concrete sentence it can copy" for a new,
+# narrower failure mode: the model echoes a literal "[...]" placeholder
+# instead of filling it in. A real ADR sentence never legitimately contains
+# a square bracket, so -- same class as _DIFF_SYNTAX_TOKENS -- this is a
+# zero-false-positive substring check, not a judgment call. Not yet
+# confirmed against a real run; this is a preemptive backstop for the new
+# prompt shape, not a response to an observed failure.
+def _detect_bracket_leak(parsed: dict) -> list[str]:
+    """Flags any of decision/consequences/diff_summary that still contain a
+    literal '[' or ']' -- i.e. the model echoed a worked-example placeholder
+    slot instead of replacing it with real content from the diff."""
+    leaked = []
+    for field in ("decision", "consequences", "diff_summary"):
+        value = parsed.get(field)
+        if not isinstance(value, str):
+            continue
+        if "[" in value or "]" in value:
+            leaked.append(field)
+    return leaked
+
+
 def _normalize_for_comparison(text: str) -> str:
     """Lowercase, strip articles, and collapse whitespace before a fuzzy
     compare.
@@ -625,6 +653,7 @@ _MIN_GROUNDING_OVERLAP = 1
 _ALREADY_FLAGGED_PREFIXES = (
     "POSSIBLE EXAMPLE COPY",
     "POSSIBLE DIFF-SYNTAX LEAK",
+    "POSSIBLE PLACEHOLDER LEAK",
     "NON-STRING OUTPUT",
 )
 
@@ -877,6 +906,20 @@ async def run_scribe(
         for field in leaked_fields:
             parsed[field] = f"POSSIBLE DIFF-SYNTAX LEAK -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
         salvage_reason = salvage_reason or "diff_syntax_leaked"
+
+    bracket_leaked_fields = _detect_bracket_leak(parsed)
+    if bracket_leaked_fields:
+        print(
+            f"WARNING: Scribe output for {bracket_leaked_fields} still "
+            f"contains a literal '[' or ']' -- the model echoed a "
+            f"worked-example placeholder slot from SCRIBE_SYSTEM_PROMPT "
+            f"instead of replacing it with real content from the diff. "
+            f"Flagging inline rather than retrying, same reasoning as the "
+            f"other guards at temperature=0.05."
+        )
+        for field in bracket_leaked_fields:
+            parsed[field] = f"POSSIBLE PLACEHOLDER LEAK -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
+        salvage_reason = salvage_reason or "placeholder_leaked"
 
     ungrounded_fields = _detect_ungrounded_content(parsed, diff_summary)
     if ungrounded_fields:
