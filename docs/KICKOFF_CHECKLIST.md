@@ -825,6 +825,38 @@ confirmed recurrences across three dates, with growing evidence (this run)
 that it's a decomposition-granularity instability, not just an id-casing
 one. §9 remains blocked.
 
+- [x] **`_detect_ungrounded_content()` independently confirmed via synthetic
+  unit test** (`tests/unit/test_ungrounded_content.py`, 6/6 passed against
+  the real `agents/scribe.py` source — extracted by line range and exec'd,
+  not a hand-copied reimplementation, so the test tracks the actual
+  shipped function). Closes the specific coverage gap this run's entry
+  flagged above: every prior confirmed fabrication (`3303ce31-`,
+  `48b3f065-`, `18ed94eb-`) was caught by `_detect_example_domain_leak()`
+  or `_detect_example_copying()` first, so `_detect_ungrounded_content()`
+  had never independently fired. Test confirms:
+  - A fabricated `decision` sharing zero vocabulary with the diff and no
+    domain/example-copy signature is correctly flagged
+    (`novel_ungrounded_fabrication_no_domain_token` case) — this is the
+    class of failure none of the other three guards can see.
+  - No over-firing on grounded output, a genuine zero-diff run, or a field
+    already flagged by an earlier guard.
+  - Documents (doesn't fix) a known accepted gap: a fabricated sentence
+    sharing exactly one real diff noun still passes ungrounded-content
+    scrutiny, by design (`_MIN_GROUNDING_OVERLAP=1`) —
+    `known_limitation_one_real_noun_rides_along` case, kept visible
+    rather than silently accepted.
+  - **Not yet done:** a live `cloud_rag.json` re-run where
+    `salvage_reason=ungrounded_content` fires on real LFM output, not just
+    synthetic cases. Synthetic confirmation is necessary but not
+    sufficient to call P0 closed against the checklist's original bar
+    ("clean re-run against `cloud_rag.json` shows no fabricated/copied
+    content... or is correctly flagged").
+  - P0 status: detection-layer coverage for all four fabrication shapes
+    (example-copy, domain-leak, diff-syntax-leak, ungrounded-novel) is now
+    unit-confirmed. Root-cause grounding fix (prompt-only) remains
+    unresolved and out of scope for this update — this closes the
+    guard-coverage question, not the underlying fabrication behavior.
+
 ---
 
 ## 9. Paper Trail
