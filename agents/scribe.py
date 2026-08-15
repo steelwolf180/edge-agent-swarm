@@ -44,17 +44,19 @@ assume, or generalize to a larger architectural decision. Do not discuss data ce
 service consolidation, tenant isolation, or any other topic unless that exact topic appears
 verbatim in the diff text you were given.
 
-DIFF FORMAT IS NOT CONTENT: the "Spec diff" section uses internal bookkeeping syntax --
-words like "dictionary_item_added", "values_changed", "iterable_item_added", the "->" arrow,
-and the "added (...)" / "added [...]" wrapper -- to mark what changed. These are structural
-labels for you to read, not English words to write back out. Never let a field's raw label or
-wrapper syntax appear in your output text. If a diff line reads
-"dictionary_item_added: project_overview -> added (purpose, target_users, deployment_environment)",
-the change is that the project's purpose, target users, and deployment environment were
-defined -- write that in plain English ("Define the project's purpose, target users, and
-deployment environment."), never "Add a dictionary_item_added for project_overview: added
-(purpose, target_users, deployment_environment)". A field containing the substring
-"dictionary_item_added", "values_changed", or "iterable_item_added" is always wrong.
+DIFF FORMAT IS NOT CONTENT: each line in the "Spec diff" section starts with a short verb
+(Added / Removed / Changed) followed by a spec field path and a colon, e.g. "Added
+project_overview: purpose, target_users, deployment_environment". This is structural
+formatting for you to read, not a sentence to copy. Two specific things are always wrong:
+(1) writing the field path itself into your output -- a path like
+"functional_requirements.integration_points[2]" or "project_overview" is a schema location,
+not a business-domain phrase, and never belongs in "decision", "consequences", or
+"diff_summary"; and (2) echoing the diff line's own shape back, e.g. "Added project_overview:
+purpose, target_users, deployment_environment" restated almost verbatim as the decision. If a
+diff line reads "Added project_overview: purpose, target_users, deployment_environment", the
+change is that the project's purpose, target users, and deployment environment were defined --
+write that in plain English ("Define the project's purpose, target users, and deployment
+environment."), never a reworded copy of the diff line itself.
 
 CRITICAL NO-DIFF RULE: If the "Spec diff" section reads exactly "No field-level changes
 detected.", there is nothing to decide and you MUST NOT invent a decision to fill the field.
@@ -87,7 +89,7 @@ stopped reading the real "Spec diff" section and started reading this one instea
 
 Example 1 -- one small, real diff entry present:
 Spec diff:
-- dictionary_item_added: functional_requirements.integration_points[2] -> added 'satellite uplink for glacier-sensor telemetry'
+- Added functional_requirements.integration_points[2]: satellite uplink for glacier-sensor telemetry
 Correct output: {"context": "L1 System Context", "decision": "Add a satellite uplink integration point for glacier-sensor telemetry.", "consequences": "The system gains a new outbound dependency on satellite uplink availability.", "diff_summary": "Added a satellite uplink integration point.", "affected_diagrams": ["context"]}
 (Every word traces to the diff line above. If your real diff does not mention satellites or
 glaciers, your output must not either -- this is a placeholder, not a hint.)
@@ -105,12 +107,12 @@ EVERY field in the current spec shows up as a change; this is the most common re
 you will see and the one most likely to tempt you toward a generic-sounding decision instead of
 one grounded in what's actually listed):
 Spec diff:
-- dictionary_item_added: project_overview -> added (purpose, target_users, deployment_environment)
-- dictionary_item_added: functional_requirements.core_features -> added ['ice-thickness measurement', 'crevasse-drift alerting']
-- dictionary_item_added: functional_requirements.integration_points -> added ['Iridium satellite network', 'field base station radio']
-- dictionary_item_added: non_functional_requirements -> added (performance, scalability, availability, security, observability)
-- dictionary_item_added: technical_constraints -> added (language_framework, existing_systems, budget_infra_limits, team_skillset)
-- dictionary_item_added: data_architecture -> added (data_sources, storage_requirements, data_flow, retention_compliance)
+- Added project_overview: purpose, target_users, deployment_environment
+- Added functional_requirements.core_features: ['ice-thickness measurement', 'crevasse-drift alerting']
+- Added functional_requirements.integration_points: ['Iridium satellite network', 'field base station radio']
+- Added non_functional_requirements: performance, scalability, availability, security, observability
+- Added technical_constraints: language_framework, existing_systems, budget_infra_limits, team_skillset
+- Added data_architecture: data_sources, storage_requirements, data_flow, retention_compliance
 Correct output: {"context": "L1 System Context", "decision": "Establish the initial architecture: a glacier sensor network integrating with the Iridium satellite network and a field base station radio.", "consequences": "All subsequent changes will be diffed against this baseline spec version.", "diff_summary": "Initial spec creation: core features, integrations (Iridium satellite network, field base station radio), and full requirement set established.", "affected_diagrams": ["context"]}
 (Pick out only what the real diff lines actually list -- here, the Iridium network and base
 station radio, and the two core features -- rather than reaching for a plausible-sounding but
@@ -185,6 +187,43 @@ def _format_diff_detail(detail) -> str:
     return str(detail)
 
 
+# DeepDiff's raw category names (e.g. "dictionary_item_added") were, until this
+# fix, interpolated directly into the prompt as the leading word of every diff
+# bullet -- and SCRIBE_SYSTEM_PROMPT's own worked examples showed that exact
+# shape as "normal" input. That combination is the confirmed root cause of the
+# §8.1b diff-syntax leak (workflow 7570a555-...): the model wasn't fabricating
+# or refusing an instruction, it was pattern-matching a template it had
+# genuinely been shown twice (once in the real diff, once in the example).
+# _detect_diff_syntax_leak() catches the symptom after the fact; this mapping
+# removes the token from the input entirely so there's nothing shaped like
+# itself for the model to echo. Every DeepDiff tree-view category currently
+# reachable from compute_spec_diff() (ignore_order=True) must have an entry
+# here -- an unmapped category falls back to "Changed", which is safe (never a
+# banned token) but less precise, so add new categories here if DeepDiff ever
+# surfaces one this mapping doesn't cover, rather than letting it fall back
+# silently forever.
+_CHANGE_TYPE_VERBS = {
+    "dictionary_item_added": "Added",
+    "dictionary_item_removed": "Removed",
+    "iterable_item_added": "Added to",
+    "iterable_item_removed": "Removed from",
+    "values_changed": "Changed",
+    "type_changes": "Changed the type of",
+}
+
+
+def _describe_change(change_type: str, path: str, detail) -> str:
+    """Render one DeepDiff change entry as a plain-English sentence fragment,
+    with no DeepDiff category token and no '->' arrow -- both named as banned
+    output in SCRIBE_SYSTEM_PROMPT's DIFF FORMAT IS NOT CONTENT rule, and both
+    now absent from the input too, so the rule has nothing left to guard
+    against on this path. _format_diff_detail() still does the value-shape
+    work (no raw dict reprs) it was written for on 6 Aug; this only replaces
+    the leading label and connector."""
+    verb = _CHANGE_TYPE_VERBS.get(change_type, "Changed")
+    return f"{verb} {path}: {_format_diff_detail(detail)}"
+
+
 def summarize_diff(diff: DeepDiff, max_items: int = 8) -> str:
     """Compress a DeepDiff into a short bullet list for the prompt.
 
@@ -194,7 +233,7 @@ def summarize_diff(diff: DeepDiff, max_items: int = 8) -> str:
     lines: list[str] = []
     for change_type, items in diff.to_dict().items():
         for path, detail in list(items.items())[:max_items]:
-            lines.append(f"- {change_type}: {path} -> {_format_diff_detail(detail)}")
+            lines.append(f"- {_describe_change(change_type, path, detail)}")
     return "\n".join(lines[:max_items]) if lines else "No field-level changes detected."
 
 def hunk_count_from_diff(diff: DeepDiff) -> int:
@@ -256,7 +295,7 @@ def summarize_creation_diff(
             continue
 
         if isinstance(value, list):
-            bullets.append(f"dictionary_item_added: {key} -> added {value!r}")
+            bullets.append(f"Added {key}: {value!r}")
             continue
 
         if isinstance(value, dict):
@@ -264,26 +303,27 @@ def summarize_creation_diff(
             # 3's functional_requirements.core_features /
             # .integration_points bullets); remaining non-empty scalar
             # subfields are named together in one bullet (mirrors Example
-            # 3's 'project_overview -> added (purpose, ...)' bullet).
+            # 3's 'project_overview: purpose, ...' bullet). Same prose shape
+            # as _describe_change() above -- no DeepDiff category token, no
+            # '->' arrow -- kept as a hand-written mirror rather than routed
+            # through _describe_change() itself since this path never has a
+            # real DeepDiff change_type to look up (everything here is a
+            # creation-diff addition by construction).
             list_subfields = {
                 k: v for k, v in value.items() if isinstance(v, list) and v
             }
             for subkey, sublist in list_subfields.items():
-                bullets.append(
-                    f"dictionary_item_added: {key}.{subkey} -> added {sublist!r}"
-                )
+                bullets.append(f"Added {key}.{subkey}: {sublist!r}")
 
             remaining = {k: v for k, v in value.items() if k not in list_subfields}
             named_fields = _non_empty_field_names(remaining)
             if named_fields:
-                bullets.append(
-                    f"dictionary_item_added: {key} -> added ({', '.join(named_fields)})"
-                )
+                bullets.append(f"Added {key}: {', '.join(named_fields)}")
             continue
 
         # Bare top-level scalar -- not expected in the current schema shape,
         # but handled explicitly rather than silently dropped.
-        bullets.append(f"dictionary_item_added: {key} -> added {value!r}")
+        bullets.append(f"Added {key}: {value!r}")
 
     hunk_count = len(bullets)
     summary = (
@@ -403,6 +443,15 @@ _DIFF_SYNTAX_TOKENS = (
     "values_changed",
     "type_changes",
 )
+
+# Note (§8.1b source fix): summarize_diff()/summarize_creation_diff() no longer
+# put any of these tokens in front of the model at all -- _describe_change()
+# and its creation-diff equivalent translate every DeepDiff category into a
+# plain verb (Added/Removed/Changed) before it reaches the prompt. This check
+# should therefore never fire again in normal operation; it stays as a
+# zero-cost backstop in case a future DeepDiff category is added upstream
+# without a corresponding entry in _CHANGE_TYPE_VERBS (which falls back to the
+# safe, non-token "Changed" rather than surfacing a raw category name).
 
 
 def _detect_diff_syntax_leak(parsed: dict) -> list[str]:
