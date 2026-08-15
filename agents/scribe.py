@@ -357,8 +357,9 @@ def _last_complete_sentence(text: str) -> str:
     return text[:matches[-1].end()].strip()
 
 
-def _salvage_truncated_scribe_output(raw: str) -> dict:
-    """Best-effort recovery when LFM hits max_tokens mid-generation.
+def _salvage_truncated_scribe_output(raw: str, cause: str = "truncated") -> dict:
+    """Best-effort recovery when LFM hits max_tokens mid-generation, or
+    produces structurally malformed JSON on a *complete* generation.
 
     Confirmed reproducible at temperature=0.05 (identical output across
     retries) -- not sampling noise a retry can route around. Rather than
@@ -367,7 +368,23 @@ def _salvage_truncated_scribe_output(raw: str) -> dict:
     field at its last complete sentence, and mark anything that never
     started with an explicit placeholder for human review at the approval
     gate -- never a silent blank.
+
+    `cause` controls only the wording of the placeholder text for
+    unrecovered fields, not the recovery logic itself. Originally this
+    function was truncation-only and every placeholder said "generation
+    exceeded token budget" -- accurate for that case, but wrong and
+    misleading when reused for the malformed_json case (workflow
+    2db3d647-...), where finish_reason='stop' means the token budget was
+    never the problem. Callers pass the real cause instead of this
+    function assuming truncation.
     """
+    if cause == "malformed_json":
+        truncated_msg = "TRUNCATED: field was cut short by malformed JSON output, not by the token budget"
+        missing_msg = "MISSING: field could not be recovered from malformed JSON output"
+    else:
+        truncated_msg = "TRUNCATED: generation exceeded token budget before completing this field"
+        missing_msg = "MISSING: generation exceeded token budget before this field started"
+
     stripped = strip_code_fence(raw)
     complete_fields = dict(_STRING_FIELD_RE.findall(stripped))
 
@@ -380,13 +397,9 @@ def _salvage_truncated_scribe_output(raw: str) -> dict:
         partial_match = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*)$', stripped)
         if partial_match and partial_match.group(1).strip():
             trimmed = _last_complete_sentence(partial_match.group(1))
-            salvaged[field] = trimmed or (
-                "TRUNCATED: generation exceeded token budget before completing this field"
-            )
+            salvaged[field] = trimmed or truncated_msg
         else:
-            salvaged[field] = (
-                "MISSING: generation exceeded token budget before this field started"
-            )
+            salvaged[field] = missing_msg
 
     return salvaged
 
@@ -846,7 +859,18 @@ async def run_scribe(
                 f"generation (finish_reason={choice.get('finish_reason')!r}, "
                 f"error={e}) -- salvaging instead of failing the step."
             )
-            parsed = _salvage_truncated_scribe_output(raw)
+            # Diagnostic only, added after workflow 2db3d647-... produced a
+            # malformed-JSON salvage with no way to tell, after the fact,
+            # whether the break was an unescaped quote inside a field value,
+            # a duplicated field, or something else -- neither this branch
+            # nor the truncation one above has ever logged the raw text that
+            # caused it, so every malformed-JSON incident so far has had to
+            # be diagnosed by guessing at the shape instead of reading it.
+            # Capped, not truncated at the error position, since the JSON
+            # decode error's char offset is a hint, not a guarantee the fault
+            # is exactly there.
+            print(f"DEBUG: Scribe raw output (malformed_json, first 2000 chars):\n{raw[:2000]}")
+            parsed = _salvage_truncated_scribe_output(raw, cause="malformed_json")
             salvage_reason = "malformed_json"
 
     parsed, coerced_fields = _coerce_adr_string_fields(parsed)
