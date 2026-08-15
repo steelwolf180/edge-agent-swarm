@@ -395,6 +395,25 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   diff, and explicitly say "no meaningful decision to record" when there's
   no real diff to explain, rather than inventing one. Same fix class as
   Critic empty-gaps.
+
+  **Update (15 Aug 2026, workflows `3303ce31-...` and `48b3f065-...`, both
+  `cloud_rag.json`):** confirmed again twice, same run session. `decision`
+  reproduces Example 3's exact template ("Establish initial architecture: a
+  glacier sensor network integrating with...") with real spec entities
+  (AWS S3, AWS RDS, Confluence, hosted embedding/LLM APIs) substituted in,
+  keeping the literal fictional phrase "glacier sensor network" -- a
+  template-fill hybrid, not a full copy or a novel invention. First
+  occurrence (`3303ce31-`) was **unflagged** by `_detect_example_copying()`
+  -- swapping enough nouns dropped the fuzzy full-sentence similarity ratio
+  below the 0.90 threshold even though the sentence shape and one literal
+  phrase were copied outright. New `_detect_example_domain_leak()` substring
+  guard added (fictional-domain tokens -- glacier/Iridium/crevasse/sensor
+  network/etc. -- can never legitimately appear in a real spec, same
+  zero-false-positive-risk class as `_DIFF_SYNTAX_TOKENS`), confirmed
+  catching the identical failure correctly on the second run (`48b3f065-`).
+  **This is a detection-layer win, not the grounding fix** -- `decision`'s
+  root behavior (reaching for Example 3's template instead of synthesizing
+  from the real diff) is unchanged across both runs. Still open.
 - [ ] **Scribe truncation recurring at 4096** — `diff_summary` salvaged again
   (12-component spec). Check correlation with component count; consider
   raising `SCRIBE_TOKEN_BUDGET` or trimming diff-detail prompt input.
@@ -432,6 +451,16 @@ the original 6-pomodoro scope, logged separately, not yet worked.
 Do NOT attempt §9 (Paper Trail) or spec bumping until this addendum is
 clear — nothing should hit the versioned artifact store with a known
 fabrication bug still open.
+
+**Status (15 Aug 2026):** §8.1b is now closed — see its section below for the
+root-cause fix and two confirming runs. That resolves the diff-syntax leak
+specifically, but does not clear the gate: P0 (Scribe fabrication on
+`decision`) is still open and was reconfirmed twice today on the same
+`cloud_rag.json` spec, now with a working detection guard
+(`_detect_example_domain_leak()`) but no grounding fix. P1 (Scribe
+truncation) and P2 (Critic distinctness) remain untouched. §8.1c (Architect
+id-declaration) recurred a third time today, still unworked. §9 remains
+blocked.
 
 **Re-run (14 Aug 2026, workflow `726ed8f9-7189-4594-9cb7-5ad43c310228`,
 `tests/simulated/cloud_rag.json`) — rejected. Partial progress, P0 not closed:**
@@ -644,6 +673,43 @@ paraphrasing.
   persisted unchanged after the prompt fix; consequences independently
   flagged by the example-copy guard as a verbatim Example 1 copy.
 
+**Root-cause fix confirmed (15 Aug 2026) — diff-syntax tokens removed from
+prompt input, not just detected at the boundary:**
+
+- [x] Root cause confirmed: `SCRIBE_SYSTEM_PROMPT`'s worked examples (Example
+  1, Example 3) showed DeepDiff's raw category tokens
+  (`dictionary_item_added`, etc.) as the normal shape of "Spec diff" input,
+  and `summarize_diff()`/`summarize_creation_diff()` interpolated those same
+  literal tokens into every real diff bullet fed to the model. The model
+  wasn't disregarding an instruction — it was pattern-matching a template it
+  had genuinely been shown twice (once as worked-example input, once as real
+  input). The 14 Aug prompt-only fix failed for exactly this reason: telling
+  the model "don't repeat this token" changes nothing when the token is
+  still the first thing on every line it's asked to summarize.
+- [x] `_CHANGE_TYPE_VERBS` + `_describe_change()` added (`agents/scribe.py`):
+  every DeepDiff category is translated to a plain verb (Added / Removed /
+  Changed) before it reaches the prompt — no raw category token, no `->`
+  arrow, in either `summarize_diff()` (incremental) or
+  `summarize_creation_diff()` (creation). Example 1 and Example 3's "Spec
+  diff:" text in `SCRIBE_SYSTEM_PROMPT` rewritten to match the new real
+  input shape exactly, closing the train/test mismatch that let the leak
+  happen in the first place.
+- [x] **Confirmed via two independent `cloud_rag.json` runs** (both 15 Aug
+  2026): workflow `3303ce31-acf5-444d-91b6-45666c16c645` and workflow
+  `48b3f065-157c-4339-a69a-5c68e724cc59`. Both show clean prose diffs in the
+  run log (`Added project_overview: purpose, target_users,
+  deployment_environment`, no tokens, no arrows) and **zero**
+  `_detect_diff_syntax_leak()` warnings on either run.
+  `_DIFF_SYNTAX_TOKENS` substring check kept in place as a zero-cost
+  backstop for any future unmapped DeepDiff category — not expected to fire
+  again in normal operation, but costs nothing to keep.
+
+**§8.1b closed (15 Aug 2026).** Diff-syntax leak fixed at the source. Note:
+both confirmation runs surfaced a *separate*, still-open fabrication issue on
+`decision` (Example 3 template-fill with real entities) — tracked under
+§8.1's P0 item above, not reopened here; it is not a recurrence of the
+diff-syntax mechanism this section targeted.
+
 ## 8.1c Architect: `_validate_diagram_ids` Recurrence (14 Aug 2026, workflow `7570a555-...`)
 
 Reopens the 4 Aug §8 item that was closed as "held clean on the next run,
@@ -663,6 +729,15 @@ confirmation, and it says the fix isn't holding.
 - Logged as its own item, separate from §8.1's Scribe/Critic bugs (Gemma/
   Architect, not LFM/Scribe) — not yet worked. Next pomodoro candidate,
   not bundled into the current Scribe session per one-variable-at-a-time.
+
+**Third recurrence (15 Aug 2026, workflow `48b3f065-157c-4339-a69a-5c68e724cc59`):**
+`architect_step` retried once (15:12:21 → 15:24:01, ~11.5 min vs. normal
+~5-6 min): attempt 1's `Rel(...)` referenced undeclared `admin_console`
+against a declared-id set (`agent`, `confluence`, `customer`, `doc_team`,
+`embedding_service`, `git_repo`, `llm_api`, `postgres`, `rag_system`,
+`vector_store`, `zendesk`) that didn't include it; self-healed on retry.
+Third occurrence across three separate dates (4 Aug, 14 Aug, 15 Aug), still
+not fixed, still not worked — logged for the pomodoro queue.
 
 ---
 
