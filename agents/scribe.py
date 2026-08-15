@@ -579,6 +579,119 @@ def _detect_example_copying(parsed: dict, diff_summary: str) -> list[str]:
     return copied
 
 
+# Common English function words plus a few high-frequency, content-free words
+# that show up in almost every ADR sentence regardless of topic (e.g. "system",
+# "new", "change") -- excluded so the overlap check below measures shared
+# *topical* vocabulary, not shared grammar.
+_STOPWORDS = frozenset({
+    "a", "an", "the", "of", "for", "and", "or", "to", "in", "on", "with",
+    "is", "are", "was", "were", "be", "been", "this", "that", "these",
+    "those", "as", "by", "at", "it", "its", "into", "from", "will", "no",
+    "not", "new", "system", "field", "fields", "record", "change", "changes",
+    "one", "all", "any", "now", "each",
+})
+
+# The mechanical vocabulary of a diff bullet itself (see _describe_change()) --
+# excluded so a field can't get "grounding" credit merely for restating the
+# diff line's own scaffolding, which DIFF FORMAT IS NOT CONTENT already bans
+# as content in its own right.
+_SCHEMA_NOISE_WORDS = frozenset({"added", "removed", "changed", "spec", "diff"})
+
+_WORD_RE = re.compile(r"[a-z0-9][a-z0-9\-]*")
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Lowercase alphanumeric/hyphenated tokens with stopwords and diff-
+    scaffolding words stripped -- a cheap, non-linguistic filter, just
+    enough to separate 'shares real topical vocabulary' from 'shares
+    nothing at all'. Not intended as a precision measure."""
+    words = _WORD_RE.findall(text.lower())
+    return {w for w in words if len(w) > 2 and w not in _STOPWORDS and w not in _SCHEMA_NOISE_WORDS}
+
+
+# One shared content word is a deliberately low bar. This guard exists to
+# catch zero-overlap fabrication (a decision about something the diff never
+# mentions at all), not to police paraphrase quality -- a field that shares
+# one real noun with the diff but invents unsupported detail around it will
+# still pass. Tightening this threshold is the natural next iteration if
+# that narrower failure mode shows up in practice; starting loose keeps
+# false positives (a correct, well-paraphrased field getting flagged) rare
+# while this guard is unproven against real runs.
+_MIN_GROUNDING_OVERLAP = 1
+
+# Prefixes already applied by an earlier guard in run_scribe -- a field
+# carrying one of these has already been flagged for human review, so this
+# guard skips it rather than stacking a second, redundant prefix on top.
+_ALREADY_FLAGGED_PREFIXES = (
+    "POSSIBLE EXAMPLE COPY",
+    "POSSIBLE DIFF-SYNTAX LEAK",
+    "NON-STRING OUTPUT",
+)
+
+
+def _detect_ungrounded_content(parsed: dict, diff_summary: str) -> list[str]:
+    """Flags a 'decision' field that shares ~no vocabulary with the real
+    diff_summary it is supposed to describe.
+
+    Scoped to 'decision' only, not 'consequences' -- every confirmed
+    fabrication case in KICKOFF_CHECKLIST.md's §8.1 is on 'decision'
+    specifically, and 'consequences' legitimately generalizes on a creation
+    diff in a way that would false-positive here: Example 3's own correct
+    answer ("All subsequent changes will be diffed against this baseline
+    spec version.") shares zero content vocabulary with its diff bullets by
+    design, since it's a statement about the mechanical fact of establishing
+    a baseline, not about the specific entities added. Checking 'decision'
+    only avoids penalizing that legitimate pattern.
+
+    The three guards above -- _detect_example_copying, _detect_example_domain_leak,
+    _detect_diff_syntax_leak -- are all *negative* checks: each looks for one
+    specific known-bad signature (verbatim/near-verbatim example copy, a
+    fictional-domain proper noun, a leaked DeepDiff token). None of them can
+    catch a genuinely novel fabrication that matches none of those
+    signatures -- which is exactly the original P0 finding (13 Aug, workflow
+    7cb63d6b-...): 'decision' described tenant-scoped retrieval isolation,
+    invented in the model's own words with no basis in spec/Researcher/
+    Architect output, on a zero-diff run. That text doesn't copy a worked
+    example, doesn't contain a glacier/Iridium token, and doesn't leak
+    DeepDiff syntax -- it would sail through all three existing guards clean.
+
+    This is a coarse positive check instead: does the field share *any* real
+    content vocabulary with the diff bullets it claims to describe? A
+    correctly grounded paraphrase of "Added a satellite uplink integration
+    point" will always reuse some of its nouns ("satellite", "uplink",
+    "integration") even fully reworded, because there is nothing else for a
+    grounded sentence to be about. Near-zero overlap is a strong signal the
+    content was invented rather than synthesized from the given diff.
+
+    Deliberately loose: threshold of 1 shared word, stopwords/schema noise
+    excluded, fields already flagged by an earlier guard skipped, and a
+    genuine zero-diff run (diff_summary == "No field-level changes
+    detected.") exempted entirely since there is nothing to ground against
+    by design -- see SCRIBE_SYSTEM_PROMPT's CRITICAL NO-DIFF RULE. This is a
+    coverage backstop for zero-overlap fabrication, not a paraphrase-fidelity
+    check -- a field that fabricates unsupported detail around one real
+    shared noun will still pass. Not yet confirmed against a real run; watch
+    for false positives on legitimately terse or abstract but correct
+    decisions before tightening the threshold.
+    """
+    if diff_summary.strip() == "No field-level changes detected.":
+        return []
+
+    diff_tokens = _content_tokens(diff_summary)
+    if not diff_tokens:
+        return []
+
+    value = parsed.get("decision")
+    if not isinstance(value, str) or value.startswith(_ALREADY_FLAGGED_PREFIXES):
+        return []
+    field_tokens = _content_tokens(value)
+    if not field_tokens:
+        return []
+    if len(field_tokens & diff_tokens) < _MIN_GROUNDING_OVERLAP:
+        return ["decision"]
+    return []
+
+
 def _coerce_adr_string_fields(parsed: dict) -> tuple[dict, list[str]]:
     """Defends against LFM returning a non-string value (dict/list) for a
     field ADROutput requires as str. Observed on a real incremental diff
@@ -764,6 +877,22 @@ async def run_scribe(
         for field in leaked_fields:
             parsed[field] = f"POSSIBLE DIFF-SYNTAX LEAK -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
         salvage_reason = salvage_reason or "diff_syntax_leaked"
+
+    ungrounded_fields = _detect_ungrounded_content(parsed, diff_summary)
+    if ungrounded_fields:
+        print(
+            f"WARNING: Scribe output for {ungrounded_fields} shares no "
+            f"real content vocabulary with the actual diff it is supposed "
+            f"to describe -- unlike the example-copy/domain-leak/diff-"
+            f"syntax guards above, this doesn't match a known-bad pattern, "
+            f"it simply fails to reference anything in the real diff at "
+            f"all, which is what novel (non-copied) fabrication looks "
+            f"like. Flagging inline rather than retrying, same reasoning "
+            f"as the other guards at temperature=0.05."
+        )
+        for field in ungrounded_fields:
+            parsed[field] = f"POSSIBLE FABRICATION (no shared content with diff) -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
+        salvage_reason = salvage_reason or "ungrounded_content"
 
     if salvage_reason:
         # Not part of ADROutput's schema -- logged, not persisted, so it can't
