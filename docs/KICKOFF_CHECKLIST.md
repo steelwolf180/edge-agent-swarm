@@ -414,6 +414,22 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   **This is a detection-layer win, not the grounding fix** -- `decision`'s
   root behavior (reaching for Example 3's template instead of synthesizing
   from the real diff) is unchanged across both runs. Still open.
+
+  **Update (15 Aug 2026, workflow `18ed94eb-...`, `cloud_rag.json`):**
+  confirmed a third time, but a notably different shape than the previous
+  two -- `decision` this run is otherwise well-grounded (correctly names
+  S3, RDS, Confluence, Zendesk, the embedding/LLM APIs, the vector store,
+  and the ingestion chunk-quality-flagging detail, all genuinely present in
+  the diff), with only the literal fictional phrase "a glacier sensor
+  network integrating with" surviving as connective tissue at the start of
+  the sentence. `_detect_example_domain_leak()` caught it correctly
+  (`salvage_reason=example_domain_leaked`). New `_detect_ungrounded_content()`
+  guard (added same day, not yet independently exercised) would not have
+  fired here even if deployed -- `decision` shares heavy real vocabulary
+  with the diff, so this case is squarely the domain-leak guard's job, not
+  a gap in the new one. Still need a run where fabrication carries no
+  glacier/Iridium token to validate the new guard's coverage independently.
+  Still open.
 - [ ] **Scribe truncation recurring at 4096** — `diff_summary` salvaged again
   (12-component spec). Check correlation with component count; consider
   raising `SCRIBE_TOKEN_BUDGET` or trimming diff-detail prompt input.
@@ -421,6 +437,21 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   lists identical content on this run, only schema-valid not analysis-valid.
   Needs prompt fix distinguishing the three categories, likely a worked
   example (same pattern as Architect declare-before-reference fix).
+
+  **Second variant confirmed (15 Aug 2026, workflow `18ed94eb-...`,
+  `cloud_rag.json`):** distinct failure shape from the original finding
+  above. `spofs` (5 items) returned the exact same literal string five
+  times -- `"RAG System interacts with Zendesk, Confluence, Git, LLM API,
+  Vector Store via Rel"` -- not distinct-but-reworded content, straight
+  repetition of one generic sentence. Inflated `spof_count` to 5 in Judge's
+  metrics as a knock-on effect (flagged `spof_count` for review, target 0,
+  threshold 1). Same root category (schema-valid, analysis-invalid) as the
+  original finding, but the fix needs to address non-repetition as well as
+  non-distinctness -- a worked example alone may not close the repetition
+  case, since that looks more like Scribe's example-copying failure mode
+  (degenerate output) than a distinctness problem; likely needs a boundary
+  guard (reject/flag a list item identical to a prior item in the same
+  list) alongside the prompt fix, not prompt wording alone.
 - [ ] **Architect `technology` list-vs-string (P3, self-heals via retry)** —
   add prompt instruction (join to comma string) + boundary coercion in
   `parse_model_sections()`, mirroring `_coerce_adr_string_fields()`.
@@ -738,6 +769,61 @@ against a declared-id set (`agent`, `confluence`, `customer`, `doc_team`,
 `vector_store`, `zendesk`) that didn't include it; self-healed on retry.
 Third occurrence across three separate dates (4 Aug, 14 Aug, 15 Aug), still
 not fixed, still not worked — logged for the pomodoro queue.
+
+**Fourth recurrence (15 Aug 2026, workflow `18ed94eb-7f78-40e4-86c3-b26278b8ad5a`):**
+`architect_step` retried once (18:10:57 → 18:13:30, ~13 min vs. normal
+~5-6 min): attempt 1's `Rel(...)` referenced undeclared `vector_store`
+against a declared-id set (`admin_console`, `agent_sidebar`, `confluence`,
+`customer`, `docs_team`, `embedding_api`, `escalation_handler`,
+`evaluation_service`, `feedback_service`, `generation_service`, `git_repo`,
+`ingestion_service`, `llm_api`, `rag_system`, `retrieval_service`,
+`support_agent`, `support_chat_widget`, `zendesk`) that didn't include it;
+self-healed on retry. New observation beyond the prior three occurrences:
+this failed attempt's decomposition is far more granular (18 components,
+service-level) than the final, approved-shape output that shipped after
+retry (9 components: `customer`, `agent`, `rag_system`, `zendesk`,
+`confluence`, `git_repo`, `llm_api`, `embedding_api`, `vector_store`) — so
+the model isn't just inconsistent about id-casing across attempts, it's
+producing genuinely different decomposition granularity attempt to attempt
+on the identical spec. Stronger signal than previously logged that this
+isn't a shallow prompt-wording issue. Fourth occurrence across four
+separate dates (4 Aug, 14 Aug, 15 Aug x2), still not fixed, still not
+worked — logged for the pomodoro queue.
+
+---
+
+## 8.1d Run Review — 15 Aug 2026, workflow `18ed94eb-7f78-40e4-86c3-b26278b8ad5a`
+
+**Rejected.** Confirms P0 still open (third occurrence, new shape), surfaces
+a new P2 variant, and adds the fourth §8.1c data point (logged above).
+
+- P0 (Scribe fabrication) and the fourth §8.1c recurrence are logged under
+  their respective sections above, not duplicated here.
+- P2 second variant (Critic `spofs` literal repetition, not just reworded
+  duplication) logged under §8.1's P2 bullet above.
+- **Non-blocking observation, Scribe `diff_summary` quality:**
+  `hunk_count=11` but `diff_summary` omitted `project_overview`,
+  `core_features`, and `key_user_flows` entirely — no truncation warning
+  fired (not `finish_reason=="length"`, no salvage placeholder), so this
+  reads as the model choosing incompleteness over hitting the token
+  budget, not a P1 recurrence. Not conflating with P1 on this run; worth a
+  line item of its own if it recurs.
+- **Reject command used:**
+  ```
+  python pipeline/send_approval.py 18ed94eb-7f78-40e4-86c3-b26278b8ad5a --reject "Scribe decision retains fictional 'glacier sensor network' phrase amid otherwise grounded content (P0, still open). Critic spofs list is 5 identical duplicate strings, not distinct analysis (P2, new degenerate variant). Architect self-healed a 4th §8.1c recurrence, also showing unstable decomposition granularity across retry attempts, not just id-casing."
+  ```
+
+**Status (15 Aug 2026, later same day):** `_detect_ungrounded_content()`
+guard (agents/scribe.py) shipped same day, ahead of this run, but not yet
+independently exercised — this run's fabrication was already caught by
+`_detect_example_domain_leak()` before the new guard's logic would matter.
+Still need a run with fabrication carrying no glacier/Iridium token to
+confirm the new guard's coverage. P0, P1, and P2 all remain open; P2 now
+has two confirmed distinct failure shapes (reworded duplication and literal
+repetition) that the eventual fix needs to cover. §8.1c stands at four
+confirmed recurrences across three dates, with growing evidence (this run)
+that it's a decomposition-granularity instability, not just an id-casing
+one. §9 remains blocked.
 
 ---
 
