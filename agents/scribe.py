@@ -489,6 +489,50 @@ def _normalize_for_comparison(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
+# Proper nouns unique to SCRIBE_SYSTEM_PROMPT's fictional worked-example domain
+# (glacier monitoring). Per the prompt's own IMPORTANT ABOUT THESE EXAMPLES note,
+# real specs in this pipeline are business systems and will NEVER legitimately
+# contain these words -- so, like _DIFF_SYNTAX_TOKENS, this is a safe plain
+# substring check with zero false-positive risk, not a judgment call.
+#
+# Added after workflow 3303ce31-... (§8.1b re-run, 15 Aug 2026) surfaced a
+# template-fill variant of example-copying that evades _detect_example_copying()'s
+# 0.90 similarity threshold: "decision" kept Example 3's exact sentence shape and
+# the literal phrase "glacier sensor network" but swapped in real entities (AWS
+# S3, AWS RDS, Confluence) for the rest of the sentence. Enough words changed to
+# drop the full-string ratio below 0.90 -- consequences/diff_summary (copied with
+# fewer substitutions) were correctly flagged, decision was not -- even though a
+# half-real, half-fictional sentence is, if anything, more likely to be rubber-
+# stamped by a reviewer than an obvious full copy would be.
+_EXAMPLE_DOMAIN_TOKENS = (
+    "glacier",
+    "iridium",
+    "crevasse",
+    "ice-thickness",
+    "sensor network",
+    "base station radio",
+    "satellite uplink",
+)
+
+
+def _detect_example_domain_leak(parsed: dict) -> list[str]:
+    """Flags any of decision/consequences/diff_summary containing a proper
+    noun unique to the worked examples' fictional domain. Complements
+    _detect_example_copying(): that check catches full-sentence structural
+    copies via fuzzy similarity; this catches a template-fill hybrid where
+    the sentence shape and surrounding entities are real but a fictional-
+    domain word rode along from the example anyway."""
+    leaked = []
+    for field in ("decision", "consequences", "diff_summary"):
+        value = parsed.get(field)
+        if not isinstance(value, str):
+            continue
+        lowered = value.lower()
+        if any(token in lowered for token in _EXAMPLE_DOMAIN_TOKENS):
+            leaked.append(field)
+    return leaked
+
+
 def _detect_example_copying(parsed: dict, diff_summary: str) -> list[str]:
     """Flags any of decision/consequences/diff_summary that closely match a
     worked-example output string -- exact OR near-verbatim (>=90% similar
@@ -685,6 +729,26 @@ async def run_scribe(
         for field in copied_fields:
             parsed[field] = f"POSSIBLE EXAMPLE COPY -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
         salvage_reason = salvage_reason or "example_copied"
+
+    domain_leaked_fields = _detect_example_domain_leak(parsed)
+    if domain_leaked_fields:
+        print(
+            f"WARNING: Scribe output for {domain_leaked_fields} contains a "
+            f"proper noun unique to the worked examples' fictional domain "
+            f"(e.g. 'glacier', 'Iridium') that can never legitimately appear "
+            f"in a real spec -- the model appears to have reused the "
+            f"example's template and entities alongside real spec content, "
+            f"a form of example-copying that evaded the fuzzy full-sentence "
+            f"similarity check above (confirmed on workflow 3303ce31-...: "
+            f"'decision' kept 'glacier sensor network' verbatim while every "
+            f"other noun was swapped for real spec entities). Flagging "
+            f"inline rather than retrying, same reasoning as the other "
+            f"example-copying guard."
+        )
+        for field in domain_leaked_fields:
+            if not parsed[field].startswith("POSSIBLE EXAMPLE COPY") and not parsed[field].startswith("POSSIBLE DIFF-SYNTAX LEAK"):
+                parsed[field] = f"POSSIBLE EXAMPLE COPY (fictional-domain term) -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
+        salvage_reason = salvage_reason or "example_domain_leaked"
 
     leaked_fields = _detect_diff_syntax_leak(parsed)
     if leaked_fields:
