@@ -825,37 +825,84 @@ confirmed recurrences across three dates, with growing evidence (this run)
 that it's a decomposition-granularity instability, not just an id-casing
 one. §9 remains blocked.
 
-- [x] **`_detect_ungrounded_content()` independently confirmed via synthetic
-  unit test** (`tests/unit/test_ungrounded_content.py`, 6/6 passed against
-  the real `agents/scribe.py` source — extracted by line range and exec'd,
-  not a hand-copied reimplementation, so the test tracks the actual
-  shipped function). Closes the specific coverage gap this run's entry
-  flagged above: every prior confirmed fabrication (`3303ce31-`,
-  `48b3f065-`, `18ed94eb-`) was caught by `_detect_example_domain_leak()`
-  or `_detect_example_copying()` first, so `_detect_ungrounded_content()`
-  had never independently fired. Test confirms:
-  - A fabricated `decision` sharing zero vocabulary with the diff and no
-    domain/example-copy signature is correctly flagged
-    (`novel_ungrounded_fabrication_no_domain_token` case) — this is the
-    class of failure none of the other three guards can see.
-  - No over-firing on grounded output, a genuine zero-diff run, or a field
-    already flagged by an earlier guard.
-  - Documents (doesn't fix) a known accepted gap: a fabricated sentence
-    sharing exactly one real diff noun still passes ungrounded-content
-    scrutiny, by design (`_MIN_GROUNDING_OVERLAP=1`) —
-    `known_limitation_one_real_noun_rides_along` case, kept visible
-    rather than silently accepted.
-  - **Not yet done:** a live `cloud_rag.json` re-run where
-    `salvage_reason=ungrounded_content` fires on real LFM output, not just
-    synthetic cases. Synthetic confirmation is necessary but not
-    sufficient to call P0 closed against the checklist's original bar
-    ("clean re-run against `cloud_rag.json` shows no fabricated/copied
-    content... or is correctly flagged").
-  - P0 status: detection-layer coverage for all four fabrication shapes
-    (example-copy, domain-leak, diff-syntax-leak, ungrounded-novel) is now
-    unit-confirmed. Root-cause grounding fix (prompt-only) remains
-    unresolved and out of scope for this update — this closes the
-    guard-coverage question, not the underlying fabrication behavior.
+---
+
+## 8.1e Scribe Example-Copying Root-Cause Attempt (15 Aug 2026, evening)
+
+Follow-up to §8.1d: three domain-specific worked-example leaks in a row
+(Stripe, then Zendesk/Confluence, then glacier/Iridium — this last one via
+`_detect_example_domain_leak()`, workflow `2079216a-...`) pointed at the
+same underlying cause regardless of which fictional or real domain the
+example used: a concrete, quotable sentence in `SCRIBE_SYSTEM_PROMPT`'s
+worked examples gives the model something to fall back on when grounding a
+large creation diff is hard.
+
+- [x] **Fix shipped (`agents/scribe.py`, `SCRIBE_SYSTEM_PROMPT`):** Example 1
+  and Example 3's `"decision"`/`"consequences"`/`"diff_summary"` values
+  rewritten as bracketed `[SLOT]` placeholders instead of finished prose —
+  no complete sentence left in the prompt for the model to copy. Example 2
+  (zero-diff case) left untouched since it was already generic and correct.
+  New `_detect_bracket_leak()` guard added as backstop in case the model
+  echoes a literal `[...]` instead of filling it in.
+- [x] **Confirmed (workflow `2db3d647-...`, `cloud_rag.json`):** zero
+  `_detect_example_domain_leak()` / `_detect_bracket_leak()` /
+  `_detect_example_copying()` flags. `decision` came back genuinely
+  grounded prose ("Define the project's purpose, target users, and
+  deployment environment.") — narrow but not copied or invented. The
+  bracket rewrite closed the domain-leak vector specifically.
+- [ ] **New issue surfaced same run, unrelated to the fix above:** Scribe
+  produced malformed JSON on a *complete* generation (`finish_reason='stop'`,
+  `json.JSONDecodeError` — not a truncation case). Regex-based salvage
+  (`_salvage_truncated_scribe_output()`) recovered `decision` correctly but
+  duplicated it into `consequences`, and mislabeled `diff_summary` as
+  "exceeded token budget" when it hadn't. Root cause not yet diagnosed —
+  the raw model output was never logged on this path, so there was no way
+  to tell whether the break was an unescaped quote inside a value, a
+  duplicated field, or something else. **Not fixed, diagnostics only:**
+  `_salvage_truncated_scribe_output()` now takes a `cause` param so
+  placeholder text stops claiming token-budget exhaustion on the
+  malformed-JSON path; a `DEBUG: Scribe raw output (malformed_json, ...)`
+  log line now prints the first 2000 chars of raw output when this fires.
+  Deliberately did not patch the regex itself without seeing a real
+  malformed output first — same "measured, not estimated" reasoning as the
+  RAM/timing figures elsewhere in this doc. Did not recur on the next run;
+  still open, watching for the next occurrence.
+- [ ] **P0 (example-copying) confirmed still open, new shape** (workflow
+  `2c01675a-...`, `cloud_rag.json`, same evening): domain-leak and
+  bracket-leak vectors held clean, but `_detect_example_copying()` (the
+  pre-existing fuzzy-match guard, unrelated to tonight's fix) caught
+  `decision`/`consequences`/`diff_summary` all closely matching **Example
+  2** (the zero-diff example) verbatim, despite this run having a real
+  11-hunk creation diff. Guard worked correctly — flagged inline, salvaged,
+  not silently approved. Net read: removing the concrete Example
+  1/Example 3 content didn't stop the model from reaching for a canned
+  example under grounding pressure, it just redirected that tendency onto
+  the one worked example still holding concrete text (Example 2). The
+  guard layer is doing its job across three distinct leak shapes now
+  (domain tokens, bracket echo, whole-example copy); the underlying
+  tendency to reach for *an* example instead of synthesizing from the real
+  diff is still unresolved.
+- [x] **Architect P3 (`technology` list-vs-string) — fifth confirmed
+  recurrence** (workflow `2c01675a-...`): `pydantic_core.ValidationError`
+  on `components.2.technology` (list instead of str), DBOS auto-retried
+  (attempt 1 of 3) and self-healed (~3 min added to Architect's step).
+  Same bug as the existing checklist item above (line ~455), not a new
+  one — logged here only for the run-log reference. Still not fixed at the
+  source (prompt instruction + boundary coercion), still self-heals via
+  retry.
+
+**Status (15 Aug 2026, session close):** §8.1 remains open, not cleared for
+§9. Progress this session: the domain-leak and bracket-leak vectors on
+Scribe are closed and confirmed by two clean runs out of three. What's
+still open: P0's underlying "reaches for a canned example instead of
+synthesizing" behavior (now on Example 2, not Example 3 or a fictional
+domain), a newly-surfaced malformed-JSON salvage case with diagnostics but
+no fix, P1 (truncation) untouched, P2 (Critic distinctness, two shapes)
+untouched, P3 (Architect coercion) at its fifth self-healing recurrence,
+and §8.1c (Architect id-declaration) at four recurrences, both still
+unworked. No unsafe output reached approval at any point tonight — every
+failure mode was caught and flagged for human review before the approval
+gate.
 
 ---
 
