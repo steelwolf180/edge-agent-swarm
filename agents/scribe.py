@@ -430,6 +430,105 @@ def _last_complete_sentence(text: str) -> str:
     return text[:matches[-1].end()].strip()
 
 
+def _find_matching_bracket(text: str, open_idx: int) -> int | None:
+    """Given text[open_idx] == '[', return the index of its matching ']',
+    skipping over bracket characters that appear inside double-quoted
+    strings (respecting backslash escapes). Returns None if unbalanced
+    (e.g. the array itself never closes before the string ends)."""
+    depth = 0
+    in_string = False
+    i = open_idx
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return None
+
+
+_MAX_LIST_COERCE_CHARS = 300  # matches _MAX_COERCED_FIELD_CHARS's convention
+
+
+def _salvage_list_valued_field(stripped: str, field: str) -> str | None:
+    """Best-effort recovery when a field that must be a single string
+    instead came back as a JSON array -- confirmed workflow b67bea1a-...
+    (19 Aug 2026): 'decision' returned as an array whose elements were
+    near-verbatim copies of individual core_features entries straight from
+    the diff bullet, instead of one <=25-word sentence. That also broke
+    JSON parsing outright (an unescaped quote inside one of the copied diff
+    entries), and _STRING_FIELD_RE -- which only matches `"field": "string"`
+    -- never matches this shape at all, so without this the field fell
+    straight to the unrecoverable MISSING placeholder. A real coverage gap
+    in the extractor, not a judgment call about content quality.
+
+    This deliberately does NOT try to reconstruct a clean one-sentence
+    field from the list -- that would be writing new content on the
+    model's behalf, not salvaging. It extracts what it can, caps it, and
+    prefixes an explicit flag so a human reviewer sees immediately this is
+    a coercion artifact of a schema-violating list, not a real (if verbose)
+    answer -- same spirit as _coerce_adr_string_fields()'s stringify-and-
+    flag backstop for the case where json.loads() succeeds but a field's
+    *type* is still wrong.
+
+    Whether the underlying behavior (dumping diff content into a list
+    instead of synthesizing one sentence) is a new failure mode or a
+    known-class recurrence on a new field is a separate, still-open
+    question -- see KICKOFF_CHECKLIST.md. This function only prevents a
+    total data loss on that failure, it doesn't diagnose or fix why the
+    model produced a list in the first place.
+
+    Returns None if the field isn't list-shaped at all, or if nothing
+    usable could be pulled out of it -- caller falls back to the existing
+    missing/truncated placeholders in that case.
+    """
+    match = re.search(rf'"{field}"\s*:\s*\[', stripped)
+    if not match:
+        return None
+
+    open_idx = match.end() - 1  # index of the '['
+    close_idx = _find_matching_bracket(stripped, open_idx)
+    bracket_text = stripped[open_idx:close_idx + 1] if close_idx is not None else stripped[open_idx:]
+
+    items: list[str] = []
+    try:
+        parsed_list = json.loads(bracket_text)
+        if isinstance(parsed_list, list):
+            items = [str(item) for item in parsed_list]
+    except (json.JSONDecodeError, ValueError):
+        # The array itself is malformed too (e.g. an unescaped quote inside
+        # one entry, which is what broke parsing in the first place) --
+        # fall back to grabbing whatever quoted substrings are extractable,
+        # rather than giving up entirely.
+        items = re.findall(r'"((?:[^"\\]|\\.)*)"', bracket_text)
+
+    joined = "; ".join(item.strip() for item in items if item.strip())
+    if not joined:
+        return None
+
+    truncated = joined[:_MAX_LIST_COERCE_CHARS]
+    if len(joined) > _MAX_LIST_COERCE_CHARS:
+        truncated = truncated.rstrip() + "..."
+
+    return (
+        "LIST-COERCED (flag for review -- model returned a list instead of "
+        "a string; this is a truncated join of that list's contents, not a "
+        f"synthesized answer): {truncated}"
+    )
+
+
 def _salvage_truncated_scribe_output(raw: str, cause: str = "truncated") -> dict:
     """Best-effort recovery when LFM hits max_tokens mid-generation, or
     produces structurally malformed JSON on a *complete* generation.
@@ -471,8 +570,14 @@ def _salvage_truncated_scribe_output(raw: str, cause: str = "truncated") -> dict
         if partial_match and partial_match.group(1).strip():
             trimmed = _last_complete_sentence(partial_match.group(1))
             salvaged[field] = trimmed or truncated_msg
-        else:
-            salvaged[field] = missing_msg
+            continue
+
+        list_coerced = _salvage_list_valued_field(stripped, field)
+        if list_coerced:
+            salvaged[field] = list_coerced
+            continue
+
+        salvaged[field] = missing_msg
 
     return salvaged
 
@@ -741,6 +846,7 @@ _ALREADY_FLAGGED_PREFIXES = (
     "POSSIBLE DIFF-SYNTAX LEAK",
     "POSSIBLE PLACEHOLDER LEAK",
     "NON-STRING OUTPUT",
+    "LIST-COERCED",
 )
 
 
