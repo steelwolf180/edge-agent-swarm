@@ -85,7 +85,17 @@ purpose, target_users, deployment_environment" restated almost verbatim as the d
 diff line reads "Added project_overview: purpose, target_users, deployment_environment", the
 change is that the project's purpose, target users, and deployment environment were defined --
 write that in plain English ("Define the project's purpose, target users, and deployment
-environment."), never a reworded copy of the diff line itself."""
+environment."), never a reworded copy of the diff line itself.
+
+A third specific trap, and the easiest one to fall into: some diff bullets (for example
+functional_requirements.key_user_flows) are themselves written as full narrative sentences,
+often chained together with "->" arrows describing a user's step-by-step flow. Because these
+bullets already read like connected prose instead of a terse field list, they are the single
+most tempting thing anywhere in the diff to copy directly into "decision" -- but a bullet like
+this is exactly as much diff content, not decision content, as any other line, and the same
+rule applies without exception: find the one load-bearing point across all such bullets, state
+it in your own words, in ONE sentence, and never carry over the "->" chain, the bullet's own
+sentence boundaries, or more than one bullet's worth of detail."""
 
 # Only included when this run's diff is genuinely empty (see _build_scribe_system_prompt).
 _SCRIBE_ZERO_DIFF_RULE = """
