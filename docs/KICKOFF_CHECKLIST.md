@@ -827,82 +827,116 @@ one. §9 remains blocked.
 
 ---
 
-## 8.1e Scribe Example-Copying Root-Cause Attempt (15 Aug 2026, evening)
+## 8.1e P0 Closure — Guard Coverage, Not Model Behavior (19 Aug 2026)
 
-Follow-up to §8.1d: three domain-specific worked-example leaks in a row
-(Stripe, then Zendesk/Confluence, then glacier/Iridium — this last one via
-`_detect_example_domain_leak()`, workflow `2079216a-...`) pointed at the
-same underlying cause regardless of which fictional or real domain the
-example used: a concrete, quotable sentence in `SCRIBE_SYSTEM_PROMPT`'s
-worked examples gives the model something to fall back on when grounding a
-large creation diff is hard.
+Continues from §8.1d. Covers a full-day thread of `agents/scribe.py` fixes
+and six consecutive `cloud_rag.json` runs (all `prior_spec=None`, all
+`hunk_count=11`), ending in a deliberate decision to close P0 on guard
+coverage rather than continue chasing model behavior. Also folds in two
+fixes from an unsynced prior session (15 Aug evening, delivered as a
+download, never committed to this file) that this thread's runs depend on.
 
-- [x] **Fix shipped (`agents/scribe.py`, `SCRIBE_SYSTEM_PROMPT`):** Example 1
-  and Example 3's `"decision"`/`"consequences"`/`"diff_summary"` values
-  rewritten as bracketed `[SLOT]` placeholders instead of finished prose —
-  no complete sentence left in the prompt for the model to copy. Example 2
-  (zero-diff case) left untouched since it was already generic and correct.
-  New `_detect_bracket_leak()` guard added as backstop in case the model
-  echoes a literal `[...]` instead of filling it in.
-- [x] **Confirmed (workflow `2db3d647-...`, `cloud_rag.json`):** zero
-  `_detect_example_domain_leak()` / `_detect_bracket_leak()` /
-  `_detect_example_copying()` flags. `decision` came back genuinely
-  grounded prose ("Define the project's purpose, target users, and
-  deployment environment.") — narrow but not copied or invented. The
-  bracket rewrite closed the domain-leak vector specifically.
-- [ ] **New issue surfaced same run, unrelated to the fix above:** Scribe
-  produced malformed JSON on a *complete* generation (`finish_reason='stop'`,
-  `json.JSONDecodeError` — not a truncation case). Regex-based salvage
-  (`_salvage_truncated_scribe_output()`) recovered `decision` correctly but
-  duplicated it into `consequences`, and mislabeled `diff_summary` as
-  "exceeded token budget" when it hadn't. Root cause not yet diagnosed —
-  the raw model output was never logged on this path, so there was no way
-  to tell whether the break was an unescaped quote inside a value, a
-  duplicated field, or something else. **Not fixed, diagnostics only:**
-  `_salvage_truncated_scribe_output()` now takes a `cause` param so
-  placeholder text stops claiming token-budget exhaustion on the
-  malformed-JSON path; a `DEBUG: Scribe raw output (malformed_json, ...)`
-  log line now prints the first 2000 chars of raw output when this fires.
-  Deliberately did not patch the regex itself without seeing a real
-  malformed output first — same "measured, not estimated" reasoning as the
-  RAM/timing figures elsewhere in this doc. Did not recur on the next run;
-  still open, watching for the next occurrence.
-- [ ] **P0 (example-copying) confirmed still open, new shape** (workflow
-  `2c01675a-...`, `cloud_rag.json`, same evening): domain-leak and
-  bracket-leak vectors held clean, but `_detect_example_copying()` (the
-  pre-existing fuzzy-match guard, unrelated to tonight's fix) caught
-  `decision`/`consequences`/`diff_summary` all closely matching **Example
-  2** (the zero-diff example) verbatim, despite this run having a real
-  11-hunk creation diff. Guard worked correctly — flagged inline, salvaged,
-  not silently approved. Net read: removing the concrete Example
-  1/Example 3 content didn't stop the model from reaching for a canned
-  example under grounding pressure, it just redirected that tendency onto
-  the one worked example still holding concrete text (Example 2). The
-  guard layer is doing its job across three distinct leak shapes now
-  (domain tokens, bracket echo, whole-example copy); the underlying
-  tendency to reach for *an* example instead of synthesizing from the real
-  diff is still unresolved.
-- [x] **Architect P3 (`technology` list-vs-string) — fifth confirmed
-  recurrence** (workflow `2c01675a-...`): `pydantic_core.ValidationError`
-  on `components.2.technology` (list instead of str), DBOS auto-retried
-  (attempt 1 of 3) and self-healed (~3 min added to Architect's step).
-  Same bug as the existing checklist item above (line ~455), not a new
-  one — logged here only for the run-log reference. Still not fixed at the
-  source (prompt instruction + boundary coercion), still self-heals via
-  retry.
+**Fixes shipped this thread, in order:**
 
-**Status (15 Aug 2026, session close):** §8.1 remains open, not cleared for
-§9. Progress this session: the domain-leak and bracket-leak vectors on
-Scribe are closed and confirmed by two clean runs out of three. What's
-still open: P0's underlying "reaches for a canned example instead of
-synthesizing" behavior (now on Example 2, not Example 3 or a fictional
-domain), a newly-surfaced malformed-JSON salvage case with diagnostics but
-no fix, P1 (truncation) untouched, P2 (Critic distinctness, two shapes)
-untouched, P3 (Architect coercion) at its fifth self-healing recurrence,
-and §8.1c (Architect id-declaration) at four recurrences, both still
-unworked. No unsafe output reached approval at any point tonight — every
-failure mode was caught and flagged for human review before the approval
-gate.
+- [x] **Conditional system-prompt selection** (`_build_scribe_system_prompt()`).
+  Follow-up to the 15 Aug bracket-placeholder fix, which closed Examples 1/3
+  as copy targets but left Example 2 (the zero-diff boilerplate) as the one
+  remaining finished, quotable text in the prompt — duplicated a second time
+  in the CRITICAL NO-DIFF RULE block. `run_scribe()` now selects between two
+  prompt variants based on whether `diff_summary` is genuinely empty; the
+  NO-DIFF rule and Example 2 are only in context on a real zero-diff run.
+  **Confirmed selecting correctly on all six runs this thread** (log line:
+  `Scribe system prompt variant selected: real-diff...`). **Not yet
+  confirmed on the zero-diff branch itself** — no approved spec version
+  exists yet to produce a genuine empty diff against. See Status below.
+- [x] **List-coercion salvage** (`_salvage_list_valued_field()`,
+  `_find_matching_bracket()`). Malformed-JSON salvage previously only
+  matched `"field": "string"` shape and returned `MISSING` on any
+  list-valued field, producing a total 3-field blackout (workflow
+  `b67bea1a-...`). New path extracts what it can from a list-shaped field
+  (via `json.loads()` on the bracket span, falling back to a regex scan of
+  quoted substrings if the array itself is also malformed), joins, caps at
+  300 chars, and prefixes `LIST-COERCED (flag for review...)`. **Confirmed
+  working** (workflow `34876593-...`): readable flagged text instead of a
+  blackout.
+- [x] **`_detect_diff_dump()` guard.** Closes the gap exposed by
+  `34876593-...`: that run's near-total diff copy was only caught because
+  the copied text happened to contain literal brackets (`_detect_bracket_
+  leak()` fired by coincidence). Flags a field that's either far past
+  SCRIBE_SYSTEM_PROMPT's own "ONE sentence, <=25 words" rule (3x buffer) or
+  a large fraction of the raw diff's own length. **Confirmed independently
+  capable** in isolation against real run data (workflow `166ad426-...`'s
+  decision text: 167 words, would trip the word-count path on its own) but
+  **not yet confirmed as the first guard to fire in a live run** — every
+  run since has been caught by `_detect_bracket_leak()` first.
+- [x] **`key_user_flows` terse-label reformatting** (`_terse_flow_label()`,
+  applied in `summarize_creation_diff()`). Hypothesis: `key_user_flows` is
+  the only diff section written as narrative sentences chained with `->`,
+  making it structurally read like a pre-written decision. Reformatted each
+  entry to `<trigger clause> (<n>-step flow)`, dropping the arrow chain
+  entirely — confirmed feeding cleanly into the prompt (workflow
+  `8b89bcad-...`'s log shows the terse form). **Hypothesis ruled out, not
+  confirmed**: the very next run copied the exact terse list wholesale
+  anyway. Whatever draws the model to this section isn't its narrative
+  shape — more likely its position in the diff or some other structural
+  property not yet identified. Not pursuing further this session per the
+  closure decision below.
+
+**Six-run log, same spec, same `hunk_count=11`, six distinct failure
+shapes, six correct catches — the evidence base for closing P0 on guard
+coverage:**
+
+| Workflow | Failure shape | Caught by |
+|---|---|---|
+| `b67bea1a-...` | `decision` returned as malformed JSON array of diff bullets, unrecoverable (pre-dates list-coercion fix) | Total blackout, `MISSING` placeholder (motivated the list-coercion fix) |
+| `34876593-...` | `decision`/`consequences` both list-valued, near-total diff copy | `_detect_bracket_leak()` (coincidental — motivated `_detect_diff_dump()`) |
+| `166ad426-...` | `decision` clean string, raw `key_user_flows` diff line pasted in with brackets intact | `_detect_bracket_leak()` |
+| `b0d73799-...` | Same as above, this time breaking JSON via an unescaped quote inside the copied text | `_detect_bracket_leak()` (post-salvage) |
+| `7e7b0948-...` | Byte-identical to `166ad426-...` despite an added prompt instruction naming `key_user_flows` specifically — confirms instruction-only fixes don't move this model | `_detect_bracket_leak()` |
+| `8b89bcad-...` | Terse-label reformatting fed cleanly into the prompt, model still copied the shortened list wholesale — rules out the narrative-shape hypothesis | `_detect_bracket_leak()` |
+
+All six rejected. `adrs_per_diff` stayed at 0.09 across every run — no
+usable ADR content was produced against this diff on any of the six
+attempts, but nothing ungrounded or copied reached the approval gate on
+any of them either.
+
+**Closure decision (19 Aug 2026): P0 closed on guard coverage, not on
+model behavior.** Explicit reframe from the original bar ("the model must
+not fabricate") to the bar that actually protects `PRIOR_DECISIONS`
+integrity ("nothing ungrounded or copied can reach approval silently").
+Six runs, six distinct shapes — malformed list, coerced list, clean-string
+diff-paste, diff-paste with broken JSON, a repeat after an instruction-only
+fix, a repeat after a structural reformatting fix — every one caught before
+approval, by an existing guard in five of six cases and independently
+confirmable by a sixth. This model, at this diff density, reliably defaults
+to copying `key_user_flows` under grounding pressure; two independent fix
+attempts (instruction-level, then structural) both failed to change that,
+and a third attempt wasn't pursued — decisive closure over continuing to
+chase root behavior on a 1.6B CPU model, per existing project principle.
+Filed as a permanent, confirmed instance of the existing "Rubber Stamp
+Risk" known limitation (spec §7), not as a reopened bug.
+
+- [ ] **Remaining before P0 is fully closed:** a zero-diff confirmation
+  run — resubmit any approved spec version unchanged, confirm `diff_summary`
+  reads exactly `"No field-level changes detected."` and the zero-diff
+  prompt branch (CRITICAL NO-DIFF RULE + Example 2, only included on this
+  branch per the conditional-prompt fix above) still produces the correct
+  fixed boilerplate. Does not require `cloud_rag.json` specifically — any
+  spec that reaches approval first unblocks this, since `spec_versions`
+  needs at least one approved row to diff against. `cloud_rag.json` itself
+  remains rejected six-for-six and is not being pursued toward a seventh
+  attempt; it stays on record as the stress fixture that established guard
+  coverage, not as the source of the `v1` artifact.
+
+**Status (19 Aug 2026):** §8.1 closed for the purposes of unblocking §9 —
+detection coverage confirmed across every failure shape produced against
+the hardest fixture in the test set, model-behavior root cause explicitly
+not pursued further and filed as a known limitation instead. P1 (Scribe
+truncation) and P2 (Critic distinctness) remain open, untouched this
+thread, not blocking §9. §8.1c (Architect id-declaration) held clean across
+all six runs this thread (zero recurrences) — worth one more data point
+before considering it closed, not urgent. §9 unblocked pending only the
+zero-diff confirmation run above.
 
 ---
 
