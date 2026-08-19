@@ -341,6 +341,41 @@ def _non_empty_field_names(section: dict) -> list[str]:
     return [k for k, v in section.items() if v not in (None, "", [], {})]
 
 
+# key_user_flows entries are written as full narrative sentences chained
+# with "->" describing a user's step-by-step journey (e.g. "Customer types
+# a question -> Retrieval Service fetches chunks -> ... -> customer rates
+# it"). Every other list-valued diff section (core_features,
+# integration_points, ...) is prose too, but not chained, sequential
+# narrative -- key_user_flows is structurally the one section that already
+# reads like a decision description before a model ever touches it.
+#
+# Confirmed NOT fixable by instruction alone: SCRIBE_SYSTEM_PROMPT's DIFF
+# FORMAT IS NOT CONTENT rule was extended (19 Aug 2026) to name
+# key_user_flows specifically and warn against copying its "->" chains.
+# The very next run (workflow 7e7b0948-...) reproduced byte-identical
+# 'decision'/'diff_summary' text to a run from *before* that instruction
+# existed -- a clean, deterministic null result, not a partial improvement.
+# Same lesson as the §8.1b diff-syntax-token fix: an instruction not to
+# copy a shape doesn't hold when that shape is still sitting in the input.
+# This removes the "->"-chain shape at the source instead -- each flow is
+# reduced to its trigger clause (before the first "->") plus a step count,
+# which preserves enough for a grounded ADR to reference without handing
+# the model a ready-made multi-step narrative to copy wholesale.
+_FLOW_ARROW_RE = re.compile(r"\s*->\s*")
+
+
+def _terse_flow_label(flow_text: str) -> str:
+    """Collapse one key_user_flows narrative string down to its trigger
+    clause and a step count, dropping the "->"-chained middle and end
+    entirely. E.g. "Customer types a question -> Retrieval Service
+    fetches chunks -> Generation Service answers -> customer rates it"
+    becomes "Customer types a question (4-step flow)"."""
+    segments = _FLOW_ARROW_RE.split(flow_text.strip())
+    trigger = segments[0].strip().rstrip(".")
+    step_count = len(segments)
+    return f"{trigger} ({step_count}-step flow)" if step_count > 1 else trigger
+
+
 def summarize_creation_diff(
     current_spec: ArchitectureSpec, max_items: int = 8
 ) -> tuple[str, int]:
@@ -400,7 +435,15 @@ def summarize_creation_diff(
                 k: v for k, v in value.items() if isinstance(v, list) and v
             }
             for subkey, sublist in list_subfields.items():
-                bullets.append(f"Added {key}.{subkey}: {sublist!r}")
+                if subkey == "key_user_flows":
+                    # See _terse_flow_label()'s note above -- these entries
+                    # are the one confirmed copy-tempting shape in this diff,
+                    # so they're reduced to trigger + step-count rather than
+                    # rendered as full "->"-chained narrative via repr().
+                    terse = [_terse_flow_label(flow) for flow in sublist]
+                    bullets.append(f"Added {key}.{subkey}: {terse!r}")
+                else:
+                    bullets.append(f"Added {key}.{subkey}: {sublist!r}")
 
             remaining = {k: v for k, v in value.items() if k not in list_subfields}
             named_fields = _non_empty_field_names(remaining)
