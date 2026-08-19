@@ -27,7 +27,36 @@ LFM_MODEL_NAME = os.environ.get("LFM_MODEL_NAME")  # must match the model name i
 SCRIBE_MAX_OUTPUT_TOKENS = int(os.environ.get("SCRIBE_TOKEN_BUDGET"))
 SCRIBE_HTTP_TIMEOUT_S = int(os.environ.get("SCRIBE_HTTP_TIMEOUT_S"))
 
-SCRIBE_SYSTEM_PROMPT = """You are the Scribe agent in an architecture review pipeline.
+# --- Scribe system prompt, built conditionally on whether this run's diff is
+# genuinely empty. Split out of one monolithic string (16 Aug 2026 fix) after
+# the bracket-placeholder fix (15 Aug 2026) closed Examples 1/3 as copy
+# targets but redirected the same underlying behavior onto Example 2 --
+# confirmed workflow (§8.1e, third run that evening): the model reproduced
+# Example 2's zero-diff boilerplate wholesale against a real 11-hunk creation
+# diff. Example 2's output can't be bracket-slotted like 1/3 -- it has to stay
+# a literal, memorizable string, because that literal string is the CORRECT
+# answer on a genuine zero-diff run (CRITICAL NO-DIFF RULE requires an exact
+# match). But that's exactly what makes it a copy target: after 1/3 lost
+# their concrete text, Example 2 -- duplicated a second time in the CRITICAL
+# NO-DIFF RULE block itself -- became the only finished, quotable, low-effort
+# text left anywhere in the prompt, and the model reached for it under
+# grounding pressure on a dense diff, same mechanism as before, new target.
+#
+# Fix follows the pattern that actually worked for the §8.1b diff-syntax leak:
+# remove the copyable text from context at the source rather than adding a
+# further instruction not to use it (already tried and already failed once
+# for a different leak in this same file). run_scribe() knows diff_summary
+# before it builds the payload, so the CRITICAL NO-DIFF RULE block and
+# Example 2 are only included in the system prompt on an actual zero-diff
+# run. On a real-diff run, that text simply isn't in context to copy.
+#
+# NOT YET CONFIRMED against a real run -- this is the untested half of the
+# §8.1e P0 root-cause hypothesis, not a landed fix. Needs two runs to close:
+# one real-diff run (confirms Example 2 leak stops) and one genuine zero-diff
+# run (confirms the NO-DIFF branch still produces correct boilerplate, so the
+# legitimate case isn't broken while fixing the illegitimate one).
+
+_SCRIBE_PROMPT_HEADER = """You are the Scribe agent in an architecture review pipeline.
 You write Architecture Decision Records (ADRs) in Context / Decision / Consequences form.
 You have no tools. Base your ADR only on the spec diff and blackboard context given to you.
 
@@ -56,7 +85,10 @@ purpose, target_users, deployment_environment" restated almost verbatim as the d
 diff line reads "Added project_overview: purpose, target_users, deployment_environment", the
 change is that the project's purpose, target users, and deployment environment were defined --
 write that in plain English ("Define the project's purpose, target users, and deployment
-environment."), never a reworded copy of the diff line itself.
+environment."), never a reworded copy of the diff line itself."""
+
+# Only included when this run's diff is genuinely empty (see _build_scribe_system_prompt).
+_SCRIBE_ZERO_DIFF_RULE = """
 
 CRITICAL NO-DIFF RULE: If the "Spec diff" section reads exactly "No field-level changes
 detected.", there is nothing to decide and you MUST NOT invent a decision to fill the field.
@@ -66,7 +98,9 @@ In that exact case, respond with these exact field values and nothing else:
 - "diff_summary": "No field-level changes detected."
 Do not substitute your own wording for these three fields when the diff is empty, even if the
 blackboard context describes an interesting system. Blackboard context explains the existing
-system; it is not itself a change and must never be the source of a "decision" on a zero-diff run.
+system; it is not itself a change and must never be the source of a "decision" on a zero-diff run."""
+
+_SCRIBE_FORMATTING_RULES = """
 
 FORMATTING RULES (all fields):
 - Never copy or quote the "Spec diff" or "Blackboard context" text verbatim into any field.
@@ -89,14 +123,22 @@ output anyway (confirmed workflow 3303ce31-...), after two earlier real-domain e
 content -- fictional or real, on-topic or not -- is something this model has repeatedly copied
 instead of grounding in the real diff, so these examples now show structure only, with nothing
 concrete left to copy. Every noun in your real output must come from the real "Spec diff"
-section given to you below, because there is nothing else it could legitimately come from.
+section given to you below, because there is nothing else it could legitimately come from."""
+
+_SCRIBE_EXAMPLE_1 = """
 
 Example 1 -- one small, real diff entry present:
 Spec diff:
 - Added functional_requirements.integration_points[2]: [your real diff line will name one real integration here]
 Correct output shape: {"context": "L1 System Context", "decision": "[one sentence, <=25 words, naming only the specific item your real diff line above added]", "consequences": "[one sentence: the concrete new dependency or effect that follows from that addition]", "diff_summary": "[short paraphrase of your real diff line above, not its field-path syntax]", "affected_diagrams": ["context"]}
 (Every word in your real answer traces to your real diff line, whatever it says -- not to this
-placeholder text.)
+placeholder text.)"""
+
+# Only included when this run's diff is genuinely empty (see _build_scribe_system_prompt).
+# This is the one remaining example with finished, literal, quotable prose -- see the
+# module-level note above for why that makes it a copy target on non-empty-diff runs,
+# and why it's withheld from the prompt entirely rather than merely discouraged.
+_SCRIBE_EXAMPLE_2 = """
 
 Example 2 -- no diff (spec_version 1, or a re-submitted spec identical to the prior version):
 Spec diff:
@@ -104,7 +146,9 @@ No field-level changes detected.
 Correct output: {"context": "L1 System Context", "decision": "No meaningful decision to record: no spec changes were detected in this run.", "consequences": "None. No architectural change occurred, so no consequence follows.", "diff_summary": "No field-level changes detected.", "affected_diagrams": ["context"]}
 (This exact answer is correct even if the blackboard context below describes a rich, detailed
 system -- none of that is a *change*, so none of it belongs in "decision". A boring correct
-answer beats an invented one.)
+answer beats an invented one.)"""
+
+_SCRIBE_EXAMPLE_3 = """
 
 Example 3 -- large creation diff (spec_version 1, no prior spec at all -- baseline is empty, so
 EVERY field in the current spec shows up as a change; this is the most common real-world case
@@ -122,12 +166,41 @@ Correct output shape: {"context": "L1 System Context", "decision": "[one sentenc
 load-bearing from YOUR real diff -- the actual core features and integrations you were given,
 never a placeholder and never wording from a different run. Everything inside a bracket above
 must be replaced with real content from your own diff, and nothing inside a bracket should ever
-survive into your output verbatim.)
+survive into your output verbatim.)"""
+
+_SCRIBE_PROMPT_FOOTER = """
 
 Respond with a single JSON object matching this schema, and nothing else:
 {"context": str, "decision": str, "consequences": str, "diff_summary": str, "affected_diagrams": ["context"]}
 For this MVP, affected_diagrams must always be exactly ["context"] -- L1 System Context is the
 only diagram level in scope. Do not emit "container" even if the diff suggests a container-level change."""
+
+
+def _build_scribe_system_prompt(zero_diff: bool) -> str:
+    """Compose SCRIBE_SYSTEM_PROMPT, including the CRITICAL NO-DIFF RULE and
+    Example 2 only when this run's diff is genuinely empty. See the module-
+    level note above _SCRIBE_PROMPT_HEADER for why: that block's finished,
+    literal text is a confirmed copy target on real-diff runs, so it's
+    withheld from context entirely rather than merely discouraged in-prompt
+    when it doesn't apply.
+    """
+    parts = [_SCRIBE_PROMPT_HEADER]
+    if zero_diff:
+        parts.append(_SCRIBE_ZERO_DIFF_RULE)
+    parts.append(_SCRIBE_FORMATTING_RULES)
+    parts.append(_SCRIBE_EXAMPLE_1)
+    if zero_diff:
+        parts.append(_SCRIBE_EXAMPLE_2)
+    parts.append(_SCRIBE_EXAMPLE_3)
+    parts.append(_SCRIBE_PROMPT_FOOTER)
+    return "".join(parts)
+
+
+# Backward-compat alias for any test or call site that still imports the
+# static name directly -- equivalent to the zero_diff=True (full) prompt.
+# run_scribe() itself always calls _build_scribe_system_prompt() fresh, per
+# request, so it never uses this stale alias.
+SCRIBE_SYSTEM_PROMPT = _build_scribe_system_prompt(zero_diff=True)
 
 
 # TODO(reconcile): identical copy of agents/critic.py's strip_code_fence().
@@ -804,10 +877,25 @@ async def run_scribe(
         f"hunk_count={hunk_count}):\n{diff_summary}"
     )
 
+    # §8.1e root-cause candidate (16 Aug 2026): select the system prompt variant
+    # based on whether this run's diff is genuinely empty, so the CRITICAL
+    # NO-DIFF RULE block and Example 2's literal boilerplate -- a confirmed
+    # copy target on real-diff runs -- are only in context when they actually
+    # apply. See _build_scribe_system_prompt()'s docstring and the note above
+    # _SCRIBE_PROMPT_HEADER for the full reasoning. Same string check the
+    # existing guards already use, so this stays one source of truth for
+    # "is this run's diff empty."
+    is_zero_diff = diff_summary.strip() == "No field-level changes detected."
+    system_prompt = _build_scribe_system_prompt(zero_diff=is_zero_diff)
+    print(
+        f"INFO: Scribe system prompt variant selected: "
+        f"{'zero-diff (includes NO-DIFF rule + Example 2)' if is_zero_diff else 'real-diff (Examples 1+3 only, no zero-diff boilerplate in context)'}"
+    )
+
     payload = {
         "model": LFM_MODEL_NAME,
         "messages": [
-            {"role": "system", "content": SCRIBE_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": build_user_prompt(diff_summary, blackboard_context)},
         ],
         "temperature": 0.05,
