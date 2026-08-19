@@ -940,12 +940,29 @@ zero-diff confirmation run above.
 
 ---
 
+**Known gap carried into §9 (19 Aug 2026):** Zero-diff prompt branch
+(CRITICAL NO-DIFF RULE + Example 2, conditional prompt selection) has
+never fired in a real run — no approved spec version existed today to
+diff against, so `diff_summary == "No field-level changes detected."`
+was never produced. Implemented and reviewed, not empirically confirmed.
+Accepted as low-risk for demo purposes (not a scripted demo path);
+revisit only if a live resubmit-unchanged flow is planned on stage.
+
 ## 9. Paper Trail
 
+**Status:** Unblocked, started 19 Aug 2026.
+
+- [ ] Verify `revision_cycles` rows exist for today's six rejected
+  `cloud_rag.json` workflows (`b67bea1a`, `34876593`, `166ad426`,
+  `b0d73799`, `7e7b0948`, `8b89bcad`) — data already exists, query only.
+- [ ] Verify `judge_scores.json` persisted per run with `spec_version`
+  reference for the same six workflows — query only.
+- [ ] Produce a real approved run (any spec, not necessarily
+  `cloud_rag.json`) to generate `artifacts/v1/*.md` content —
+  `cloud_rag.json` stays on record 6-for-6 rejected, not pursued
+  toward a 7th attempt.
 - [ ] Commit `artifacts/v1/*.md` to GitLab
 - [ ] Confirm GitLab renders `context_diagram.md` (C4Context block) inline
-- [ ] Verify `revision_cycles` row written on rejection
-- [ ] Verify `judge_scores.json` persisted per run with `spec_version` reference
 
 ---
 
