@@ -849,6 +849,79 @@ _ALREADY_FLAGGED_PREFIXES = (
     "LIST-COERCED",
 )
 
+# SCRIBE_SYSTEM_PROMPT's own stated cap for decision/consequences ("ONE
+# sentence, no more than 25 words"). _SENTENCE_WORD_LIMIT_MULTIPLE is a
+# generous buffer above that -- this isn't trying to strictly enforce the
+# prompt's exact word count (that's the model's job, and a correct sentence
+# running a little long shouldn't get flagged), it's a backstop against a
+# field that is obviously not "one sentence" by any reading at all.
+_MAX_SENTENCE_WORDS = 25
+_SENTENCE_WORD_LIMIT_MULTIPLE = 3
+
+# A field whose length is this large a fraction of the raw diff_summary's
+# own length is far beyond "a short paraphrase" (FORMATTING RULES) no
+# matter what it says -- it means most of the diff's own text rode along
+# into the field rather than being condensed. Skipped on trivially short
+# diffs (_DIFF_DUMP_MIN_DIFF_CHARS) since even a fully-grounded field can
+# legitimately be a large fraction of a short diff's length there.
+_DIFF_DUMP_LENGTH_RATIO = 0.4
+_DIFF_DUMP_MIN_DIFF_CHARS = 200
+
+
+def _detect_diff_dump(parsed: dict, diff_summary: str) -> list[str]:
+    """Flags a field that is either far longer than SCRIBE_SYSTEM_PROMPT's
+    own stated 'ONE sentence, <=25 words' rule (decision/consequences
+    only), or whose length is a large fraction of the raw diff_summary's
+    own length (all three fields) -- both signals that the model
+    reproduced large chunks of the diff wholesale instead of synthesizing
+    a short paraphrase.
+
+    Confirmed workflow 34876593-... (19 Aug 2026): 'decision' and
+    'consequences' both came back as near-total copies of diff content
+    (the model's own core_features list, largely verbatim). That
+    particular run was caught anyway, but only because the copied text
+    happened to contain literal brackets that tripped _detect_bracket_
+    leak() -- an accident of what the diff itself looked like, not a
+    targeted check. If the diff's core_features hadn't contained brackets,
+    the same failure would have passed every existing guard clean,
+    including _detect_ungrounded_content() (which would see heavy shared
+    vocabulary, because the field *is* the diff). This guard targets a
+    diff-sized field directly, on length and word count alone, so
+    detection doesn't depend on an incidental character collision.
+
+    Two independent signals rather than one, since either alone can
+    misfire: a field could be long without copying the diff (verbose but
+    original text -- word-count check would still catch it if truly
+    excessive), or share a high fraction of a short diff's length without
+    actually being a dump (little content to work with either way -- the
+    diff-size floor guards against this). Not yet confirmed against a real
+    run where it's the only guard that fires -- workflow 34876593-... was
+    already caught by _detect_bracket_leak() before this check would run
+    against it.
+    """
+    flagged = []
+    diff_len = len(diff_summary.strip())
+
+    for field in ("decision", "consequences"):
+        value = parsed.get(field)
+        if not isinstance(value, str) or value.startswith(_ALREADY_FLAGGED_PREFIXES):
+            continue
+        too_long_for_one_sentence = len(value.split()) > _MAX_SENTENCE_WORDS * _SENTENCE_WORD_LIMIT_MULTIPLE
+        diff_sized = diff_len >= _DIFF_DUMP_MIN_DIFF_CHARS and len(value) > diff_len * _DIFF_DUMP_LENGTH_RATIO
+        if too_long_for_one_sentence or diff_sized:
+            flagged.append(field)
+
+    value = parsed.get("diff_summary")
+    if (
+        isinstance(value, str)
+        and not value.startswith(_ALREADY_FLAGGED_PREFIXES)
+        and diff_len >= _DIFF_DUMP_MIN_DIFF_CHARS
+        and len(value) > diff_len * _DIFF_DUMP_LENGTH_RATIO
+    ):
+        flagged.append("diff_summary")
+
+    return flagged
+
 
 def _detect_ungrounded_content(parsed: dict, diff_summary: str) -> list[str]:
     """Flags a 'decision' field that shares ~no vocabulary with the real
@@ -1154,6 +1227,24 @@ async def run_scribe(
         for field in ungrounded_fields:
             parsed[field] = f"POSSIBLE FABRICATION (no shared content with diff) -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
         salvage_reason = salvage_reason or "ungrounded_content"
+
+    diff_dump_fields = _detect_diff_dump(parsed, diff_summary)
+    if diff_dump_fields:
+        print(
+            f"WARNING: Scribe output for {diff_dump_fields} is far longer "
+            f"than SCRIBE_SYSTEM_PROMPT's own 'ONE sentence, <=25 words' "
+            f"rule allows, and/or a large fraction of the raw diff's own "
+            f"length -- the model appears to have reproduced large chunks "
+            f"of the diff wholesale instead of synthesizing a short "
+            f"paraphrase (confirmed workflow 34876593-...: 'decision' and "
+            f"'consequences' both came back as near-total copies of the "
+            f"diff's core_features content). Flagging inline rather than "
+            f"retrying, same reasoning as the other guards at "
+            f"temperature=0.05."
+        )
+        for field in diff_dump_fields:
+            parsed[field] = f"POSSIBLE DIFF DUMP (field reproduces large fraction of diff, not a short paraphrase) -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
+        salvage_reason = salvage_reason or "diff_dump"
 
     if salvage_reason:
         # Not part of ADROutput's schema -- logged, not persisted, so it can't
