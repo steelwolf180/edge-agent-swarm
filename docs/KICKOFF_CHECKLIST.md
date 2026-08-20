@@ -452,6 +452,24 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   (degenerate output) than a distinctness problem; likely needs a boundary
   guard (reject/flag a list item identical to a prior item in the same
   list) alongside the prompt fix, not prompt wording alone.
+
+  **Third variant (20 Aug 2026, workflow `1f38387f-...`, `cloud_rag_2.json`
+  vs `cloud_rag.json`, single-field diff):** `gaps` and `missing_integrations`
+  are now three genuinely distinct items each (Vector Store / Zendesk /
+  Confluence) — first clean result on the reworded-duplication variant.
+  `spofs` is unchanged: same literal sentence ("RAG System is a single
+  instance handling both critical paths with no stated redundancy") three
+  times, same as the 15 Aug `18ed94eb-...` finding. Useful narrowing: this
+  run's diff is a single non-functional-requirements field change, about as
+  far from `18ed94eb-...`'s 11-hunk creation diff as this test set gets, and
+  `spofs` still degenerated while `gaps`/`missing_integrations` didn't —
+  rules out diff density/complexity as the driver for `spofs` specifically,
+  and separates it from whatever was making all three lists collapse
+  together originally. Points at something particular to how the `spofs`
+  field is generated (prompt ordering, field-specific instruction, or
+  token-budget pressure late in the output), not a general list-repetition
+  tendency. **Session started same day to fix this** — see status line
+  below.
 - [ ] **Architect `technology` list-vs-string (P3, self-heals via retry)** —
   add prompt instruction (join to comma string) + boundary coercion in
   `parse_model_sections()`, mirroring `_coerce_adr_string_fields()`.
@@ -937,6 +955,107 @@ thread, not blocking §9. §8.1c (Architect id-declaration) held clean across
 all six runs this thread (zero recurrences) — worth one more data point
 before considering it closed, not urgent. §9 unblocked pending only the
 zero-diff confirmation run above.
+
+---
+
+## 8.1f Scribe Diff-Path Leak — Fixed and Confirmed Closed (20 Aug 2026)
+
+First real incremental-diff run (`prior_spec` present, not a `cloud_rag.json`
+creation diff) exercised in this whole thread — `spec.json` (v1) →
+`spec_v2.json` (v2), single-field change (`non_functional_requirements.
+performance`, 5s → 10s). Surfaced a leak the §8.1a/§8.1b fixes never
+touched, because `summarize_diff()` (the incremental path) is a different
+code path from `summarize_creation_diff()` (what every prior `cloud_rag.json`
+run exercised).
+
+- [x] **Root cause confirmed:** `summarize_diff()` builds each bullet via
+  `_describe_change(change_type, path, detail)`, and `path` came straight
+  from `diff.to_dict()` under DeepDiff's `view="tree"` — DeepDiff's own path
+  repr, e.g. `root['non_functional_requirements']['performance']`. The
+  8.1a/8.1b fixes translated the category token (`values_changed` →
+  `Changed`) and cleaned up value formatting, but never touched the path
+  string. `summarize_creation_diff()` was never exposed to this because it
+  builds paths by hand from `_non_empty_field_names()`, not from DeepDiff's
+  repr — so nothing in the six-run §8.1e evidence base could have surfaced
+  it.
+- [x] **Confirmed on workflow `1060730f-...` (20 Aug 2026):** `decision`
+  contained `root['non_functional_requirements']['performance']` verbatim.
+  Caught by `_detect_bracket_leak()` as an incidental backstop (the repr
+  happens to contain brackets), not by `_detect_diff_syntax_leak()` (whose
+  token list doesn't include `root[` / bracket-path syntax) — same
+  "caught by an accident of what the leak looked like, not a targeted
+  check" pattern as `_detect_diff_dump()`'s own motivating case.
+- [x] **Fix shipped (`agents/scribe.py`):** `_clean_diff_path()` + backing
+  `_DEEPDIFF_PATH_RE`, added directly after `_CHANGE_TYPE_VERBS`; converts
+  `root['a']['b'][2]` → `a.b[2]`, matching the dotted/bracketed style
+  already shown as normal in `SCRIBE_SYSTEM_PROMPT`'s own examples.
+  `_describe_change()`'s one return line updated to call it. No new import
+  needed (`re` already used elsewhere in the file).
+- [x] **Confirmed via re-run, workflow `1f38387f-...` (20 Aug 2026), same
+  spec pair:** log line reads `Changed non_functional_requirements.
+  performance: changed from '...' to '...'` — no `root[`, no bracket-path
+  syntax. `decision`/`consequences`/`diff_summary` were still flagged this
+  run, but by `_detect_diff_dump()` (length/diff-dump), a separate and
+  already-known-open issue, not this leak. **§8.1f closed** — this specific
+  leak shape does not recur.
+
+**New open item surfaced by these same two runs, not part of this
+fix:** neither run's `consequences`/`diff_summary` got the *direction* of
+the change right — both described the 5s→10s change (a loosened, more
+permissive latency requirement) as "tightened" / "a stricter performance
+expectation," the opposite of what happened. Confirmed 2/2 on workflows
+`1060730f-...` and `1f38387f-...`. No existing guard checks this — every
+guard so far targets copying/leaking/length, not semantic correctness of a
+numeric or threshold change. Both instances happened to also get flagged
+by `_detect_diff_dump()` on length, so nothing has silently passed yet, but
+that's incidental, not because the directionality is checked. Logged as an
+open item, not scheduled this session — needs design thought (what does
+"backwards" mean generically across arbitrary field types?), not a quick
+prompt patch, and per the project's own track record instruction-only
+fixes haven't held on this model.
+
+## 7.1 Infra Risk: `run_pipeline.sh`'s EXIT Trap Can Delete a Workflow Correctly Awaiting Review (20 Aug 2026)
+
+Surfaced by an accidental Ctrl-C on workflow `1f38387f-...` — hit *after*
+the pipeline had already printed `[5/5] Judge done. Awaiting human review.`
+(i.e. the workflow was correctly blocked on `DBOS.recv()`, not stuck or
+crashed).
+
+- [ ] **Not yet fixed, needs verification first.** `run_pipeline.sh`'s
+  `trap 'restore_turbo_state; stop_thermal_monitor; clear_pending_workflows'
+  EXIT` runs `clear_pending_workflows()` unconditionally on any exit,
+  including Ctrl-C. That function does `DELETE FROM dbos.workflow_status
+  WHERE status = 'PENDING'` — but a workflow correctly paused at
+  `DBOS.recv()` awaiting human approval is *also* status `PENDING` in DBOS;
+  there's no separate status distinguishing "genuinely stale, safe to
+  sweep" (the case the script's own header comment describes: a Ctrl-C'd or
+  crashed run whose leftover would double-execute alongside the next
+  `DBOS.launch()`) from "correctly blocked on a human gate, ~15 min of
+  Researcher+Architect compute already sunk into it." Log confirms: `DELETE
+  1` immediately after the Ctrl-C.
+- [ ] **Action item before next run:** confirm whether `1f38387f-...` is
+  actually unrecoverable — `python pipeline/send_approval.py 1f38387f-...
+  --reject "test"` and check whether it errors (workflow_status row gone,
+  decision unrecordable, compute sunk) or succeeds (row survived, only
+  something else was cleared). Don't assume either way without checking.
+- [ ] **Proposed fix, not yet applied:** the pre-run `clear_pending_
+  workflows()` call at the top of the script (before `DBOS.launch()`)
+  already covers the concurrent-recovery problem the header comment
+  describes — a stale leftover from *last* run gets swept before *this*
+  run starts. The trap-based post-run call adds no protection beyond that
+  for next time, but does add this failure mode on any interrupt during a
+  review wait. Proposed: drop `clear_pending_workflows` from the `trap`
+  line, keep only the explicit pre-run call. Not applied yet — should be a
+  standalone change per the one-variable-at-a-time rule, not bundled with
+  the Critic `spofs` fix below.
+
+**Status (20 Aug 2026):** §8.1f closed (Scribe diff-path leak fixed and
+confirmed via `1f38387f-...`). Directionality gap logged as open, not
+scheduled. §7.1 (`run_pipeline.sh` trap risk) open, verification pending
+before the fix is applied. P2 (`spofs` repetition) — see updated bullet
+above (third variant, workflow `1f38387f-...`) — session started same day
+to fix `critic.py`; not yet closed. P1 (Scribe truncation) still untouched.
+§9 remains unblocked per 19 Aug status; none of today's findings reopen it.
 
 ---
 
