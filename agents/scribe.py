@@ -298,6 +298,25 @@ _CHANGE_TYPE_VERBS = {
     "type_changes": "Changed the type of",
 }
 
+_DEEPDIFF_PATH_RE = re.compile(r"\['([^']+)'\]|\[(\d+)\]")
+
+def _clean_diff_path(path: str) -> str:
+    """Convert DeepDiff's raw tree-view path repr (root['a']['b'][2]) into
+    the dotted/bracketed field-path style already used safely in
+    summarize_creation_diff() and shown as normal in SCRIBE_SYSTEM_PROMPT's
+    own examples (e.g. 'functional_requirements.integration_points[2]').
+    DeepDiff's 'root[...]' syntax was never in scope for the 8.1a/8.1b
+    token-leak fixes -- those only translated the category verb, not the
+    path string itself -- and summarize_diff() is the only path-summarizing
+    function that still passes a DeepDiff-native string through unmodified.
+    """
+    parts = []
+    for key, idx in _DEEPDIFF_PATH_RE.findall(path):
+        if key:
+            parts.append(f".{key}" if parts else key)
+        else:
+            parts.append(f"[{idx}]")
+    return "".join(parts) or path
 
 def _describe_change(change_type: str, path: str, detail) -> str:
     """Render one DeepDiff change entry as a plain-English sentence fragment,
@@ -308,7 +327,7 @@ def _describe_change(change_type: str, path: str, detail) -> str:
     work (no raw dict reprs) it was written for on 6 Aug; this only replaces
     the leading label and connector."""
     verb = _CHANGE_TYPE_VERBS.get(change_type, "Changed")
-    return f"{verb} {path}: {_format_diff_detail(detail)}"
+    return f"{verb} {_clean_diff_path(path)}: {_format_diff_detail(detail)}"
 
 
 def summarize_diff(diff: DeepDiff, max_items: int = 8) -> str:
