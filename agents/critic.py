@@ -78,6 +78,29 @@ def strip_code_fence(raw: str) -> str:
             stripped = stripped.rstrip()[:-3]
     return stripped.strip()
 
+def _detect_duplicate_list_items(parsed: dict) -> list[str]:
+    """Flag any list field (spofs, missing_integrations, gap descriptions)
+    containing an exact-duplicate entry. Boundary backstop for degenerate
+    output (e.g. the same spof sentence repeated N times) that schema
+    validation alone won't catch -- CriticOutput doesn't enforce uniqueness.
+    """
+    warnings = []
+    for field in ("spofs", "missing_integrations"):
+        items = parsed.get(field) or []
+        seen = set()
+        for item in items:
+            key = item.strip().lower()
+            if key in seen:
+                warnings.append(
+                    f"Critic output for '{field}' contains a duplicate entry: {item[:80]!r}"
+                )
+                break
+            seen.add(key)
+    # gaps is a list of dicts -- compare on 'description'
+    gap_descs = [g.get("description", "").strip().lower() for g in (parsed.get("gaps") or [])]
+    if len(gap_descs) != len(set(gap_descs)):
+        warnings.append("Critic output for 'gaps' contains a duplicate description.")
+    return warnings
 
 def summarize_components(components: list[Component]) -> str:
     """Compact bullet list of components for the prompt, staying inside the
@@ -160,6 +183,12 @@ async def run_critic(
         raise ValueError(f"Critic: LFM did not return valid JSON: {raw[:200]}") from e
 
     try:
-        return CriticOutput.model_validate(parsed)
+        validated = CriticOutput.model_validate(parsed)
     except ValidationError as e:
         raise ValueError(f"Critic: LFM output failed CriticOutput validation: {e}") from e
+
+    dup_warnings = _detect_duplicate_list_items(parsed)
+    for w in dup_warnings:
+        print(f"WARNING: {w}")  # match whatever logging call scribe.py actually uses here
+
+    return validated
