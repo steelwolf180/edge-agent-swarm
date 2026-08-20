@@ -102,6 +102,55 @@ def _detect_duplicate_list_items(parsed: dict) -> list[str]:
         warnings.append("Critic output for 'gaps' contains a duplicate description.")
     return warnings
 
+def _detect_cross_field_duplication(parsed: dict) -> list[str]:
+    """spofs and missing_integrations are semantically distinct categories --
+    a SPOF is a redundancy/resilience risk, a missing integration is an
+    undeclared dependency. Identical (or near-identical) entries across the
+    two means the model treated them as the same list twice, not two kinds
+    of analysis. Also checks gaps descriptions for the same underlying
+    reworded-duplicate problem, since gaps is prose while spofs/missing_
+    integrations are terse -- exact-match alone won't catch gaps overlap,
+    so gaps is compared via substring containment against the other two
+    instead of set intersection.
+
+    Confirmed live on workflow 59e4e1b2-...: spofs and missing_integrations
+    were identical entry-for-entry (3/3), gaps repeated the same three
+    underlying findings as full sentences. _detect_duplicate_list_items()
+    correctly found no *within-list* repetition on that run and stayed
+    silent -- this guard covers the cross-field axis it doesn't.
+    """
+    warnings = []
+    spofs = [s.strip().lower() for s in (parsed.get("spofs") or [])]
+    missing = [s.strip().lower() for s in (parsed.get("missing_integrations") or [])]
+
+    spofs_set = set(spofs)
+    missing_set = set(missing)
+    exact_overlap = spofs_set & missing_set
+    if exact_overlap:
+        warnings.append(
+            f"Critic 'spofs' and 'missing_integrations' share "
+            f"{len(exact_overlap)} identical entr{'y' if len(exact_overlap) == 1 else 'ies'} "
+            f"-- not distinct analysis categories on this run."
+        )
+
+    # gaps is prose, so check whether a gap description contains a spof or
+    # missing_integrations entry as a substring rather than requiring an
+    # exact match -- catches the reworded-into-a-sentence case.
+    gap_descs = [g.get("description", "").strip().lower() for g in (parsed.get("gaps") or [])]
+    reworded_hits = 0
+    for gap in gap_descs:
+        if any(s and s in gap for s in spofs_set) or any(m and m in gap for m in missing_set):
+            reworded_hits += 1
+    if reworded_hits:
+        warnings.append(
+            f"Critic 'gaps' contains {reworded_hits} description(s) that "
+            f"restate a 'spofs' or 'missing_integrations' entry rather than "
+            f"offering distinct analysis."
+        )
+
+    return warnings
+
+
 def summarize_components(components: list[Component]) -> str:
     """Compact bullet list of components for the prompt, staying inside the
     ~700 token Critic input budget (spec §4 Context Window Budget)."""
@@ -190,5 +239,9 @@ async def run_critic(
     dup_warnings = _detect_duplicate_list_items(parsed)
     for w in dup_warnings:
         print(f"WARNING: {w}")  # match whatever logging call scribe.py actually uses here
+
+    cross_field_warnings = _detect_cross_field_duplication(parsed)
+    for w in cross_field_warnings:
+        print(f"WARNING: {w}")
 
     return validated
