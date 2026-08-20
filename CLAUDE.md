@@ -1,8 +1,13 @@
 # Agent Swarm at the Edge
 
-See @README.md, @docs/KICKOFF_CHECKLIST.md, and @docs/agent_swarm_architecture_spec.md for full context.
+## Reference docs
+
+- @README.md
+- @docs/KICKOFF_CHECKLIST.md
+- @docs/agent_swarm_architecture_spec.md
 
 ## Environment
+
 - conda env `swarm` (Python 3.11), CPU-only, ~7-8GB RAM ceiling
 - llama-server must be running (router mode, port 8080) before any agent test
 - PostgreSQL 18, native install (not Docker) — `pg_isready -h localhost -p 5432`
