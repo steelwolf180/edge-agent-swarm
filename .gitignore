@@ -32,4 +32,3 @@ dist/
 # Ephemeral review snapshots (regenerable via pipeline/view_result.py <workflow_id>
 # from DBOS step history + Postgres) — not the source of truth, don't track.
 artifacts/review/
-docs/agent_swarm_architecture_spec.md
