@@ -385,6 +385,96 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 
 ## 8.1 Post-Run Fixes (13 Aug 2026, workflow 7cb63d6b-...)
 
+- [x] **Critic spofs/missing_integrations echo diagram content verbatim, not
+  analysis (P5) — guard shipped and confirmed on two independent runs.**
+  First occurrence (workflow `873af0ae-f455-4a45-a539-f1add8229820`, 21
+  Aug 2026): all three `spofs` entries were scrambled restatements of a
+  single `Rel()` edge from the Architect's own diagram, not genuine
+  redundancy/resilience analysis — uncaught by any existing guard (not a
+  within-field duplicate, not a cross-field duplicate, not a copy of
+  `CRITIC_SYSTEM_PROMPT`'s fixed worked example, since the leaked content
+  came from the diagram, not the prompt). Fixed with
+  `_flag_diagram_relationship_echo()` (`agents/critic.py`): extracts
+  `Rel()` edge text (component names + label) as a known, fixed anchor
+  (available before Critic runs, unlike the P2 gap-vs-spof paraphrase
+  case that was ruled out for lacking one) and flags any
+  gaps/spofs/missing_integrations entry with ≥0.50 bag-of-words token
+  overlap against it, provided the entry contains none of a short
+  resilience-vocabulary list (single/redundant/failover/outage/etc.) —
+  token overlap chosen over `SequenceMatcher` since hand-checking this
+  run's entries against their source Rel label scored only ~0.7
+  character-similarity, under the 0.90 threshold used elsewhere in this
+  file; word-order scrambling and reworded verbs defeat a
+  character-alignment comparison.
+
+  Same fix pass also closed a related asymmetry in
+  `_flag_cross_field_duplication()`: a `gaps` entry matching
+  `missing_integrations`/`spofs` via substring now flags the matched
+  entry in that field too, not just the `gaps` side — previously
+  `missing_integrations[1]` on this same run (byte-identical to a
+  flagged `gaps` entry) reached the review doc with no marker.
+
+  **Second confirming run** (workflow
+  `9f651906-b08f-4075-8077-e4670fd81125`, 21 Aug 2026, structurally
+  different diagram from the first): 15 of 18 `spofs` entries and 1 of 4
+  `missing_integrations` correctly flagged by the Rel-based check as
+  shipped, including entries that reassigned the *wrong* component to a
+  Rel's action (e.g. "Zendesk pulls documents from Confluence API" —
+  confirms the check generalizes past exact wording/attribution, not
+  overfit to the first run). But 3 `spofs` entries slipped through:
+  `"Zendesk manages tickets and help center"`, `"Confluence is source of
+  truth for documentation"`, `"Git repository is source of truth for
+  versioned technical docs"` — these restate a `System_Ext(...)`
+  declaration's own description string (its third argument), not a
+  `Rel()` edge, a diagram construct the original fix never parsed.
+
+  **Fix extended same day:** `_extract_declaration_texts()` added,
+  parsing `System`/`System_Ext`/`Person` declaration name + description
+  as a second anchor set. Tried applying it to all three fields first
+  (matching the Rel-based check's scope) and found a real false positive:
+  two genuinely correct `missing_integrations` entries on the same run
+  (`"Confluence API (source docs)"`, `"Zendesk API (help center articles
+  + ticket context)"`) scored 0.5–0.67 against the matching declaration's
+  description, since a correct description of what an integration does
+  will always legitimately share vocabulary with the diagram's own
+  correct description of that component. Scoped the declaration check to
+  **`spofs` only** instead — legitimate SPOF content is about
+  redundancy/resilience risk, not restating what a component is/does, so
+  high overlap there is a reliable echo signal in a way it isn't for
+  `missing_integrations`/`gaps`. Re-confirmed against both runs after
+  scoping: all 18/18 `spofs` now flagged on `9f651906-...`, the two
+  legitimate `missing_integrations` entries stay unflagged, nothing
+  regressed on `873af0ae-...`, and a control legitimate-SPOF string (the
+  fixed worked-example text, unrelated to either diagram) does not
+  falsely flag on either diagram.
+
+  **Not yet fixed, separate item:** `spofs` returned **18 entries** on
+  `9f651906-...` against `CRITIC_SYSTEM_PROMPT`'s own stated cap of 3.
+  The echo guard flags content, it doesn't cap list length — `Judge`
+  scored `spof_count=18.0` against a target of 0.0 regardless of how many
+  of those 18 are legitimately echo-flagged. No boundary guard currently
+  enforces the prompt's stated caps (no `spofs`/`gaps`/
+  `missing_integrations` equivalent of Scribe's `_detect_diff_dump()`).
+  Logged as a follow-up, not pursued this session — one variable at a
+  time.
+
+- **Other findings, same session, workflow `9f651906-...` (21 Aug 2026,
+  not part of the P5 fix, logged separately per usual practice):**
+  - §8.1c (Architect id-declaration) recurred a fifth time, new variant:
+    `Rel(...)` referenced `confluenc` (a literal typo/dropped character,
+    not a casing mismatch like the prior four occurrences) against a
+    declared-id set that correctly included `confluence`. Self-healed on
+    retry (attempt 1 of 3, ~4 min extra compute). Still not worked — logged
+    for the pomodoro queue, now five occurrences across three dates.
+  - Scribe `decision` field flagged `POSSIBLE PLACEHOLDER LEAK` again
+    (P0-adjacent, guard fired correctly, salvaged) — consistent with P0's
+    19 Aug closure being guard-coverage, not model-behavior; nothing new
+    here, not reopening P0.
+  - Rejected. Reject notes used: guard names + specific fields per usual
+    convention (`decision` placeholder leak, `spofs`/`missing_
+    integrations` diagram-relationship-echo pre-fix, Architect `confluenc`
+    self-heal noted for context).
+
 **Confirmed via real run + human reject**, not yet fixed:
 
 - [ ] **Scribe fabrication (P0, blocks trusting any ADR)** — decision text
