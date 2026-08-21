@@ -360,64 +360,6 @@ def _non_empty_field_names(section: dict) -> list[str]:
     return [k for k, v in section.items() if v not in (None, "", [], {})]
 
 
-# key_user_flows entries are written as full narrative sentences chained
-# with "->" describing a user's step-by-step journey (e.g. "Customer types
-# a question -> Retrieval Service fetches chunks -> ... -> customer rates
-# it"). Every other list-valued diff section (core_features,
-# integration_points, ...) is prose too, but not chained, sequential
-# narrative -- key_user_flows is structurally the one section that already
-# reads like a decision description before a model ever touches it.
-#
-# Confirmed NOT fixable by instruction alone: SCRIBE_SYSTEM_PROMPT's DIFF
-# FORMAT IS NOT CONTENT rule was extended (19 Aug 2026) to name
-# key_user_flows specifically and warn against copying its "->" chains.
-# The very next run (workflow 7e7b0948-...) reproduced byte-identical
-# 'decision'/'diff_summary' text to a run from *before* that instruction
-# existed -- a clean, deterministic null result, not a partial improvement.
-#
-# Confirmed NOT fixable by structural reformatting either (21 Aug 2026):
-# _terse_flow_label() (below, kept for reference / possible future reuse,
-# no longer called) collapsed each flow to its trigger clause + step count,
-# removing the "->"-chain shape entirely -- and the very next run
-# (workflow 8b89bcad-...) copied the shortened list wholesale anyway. Two
-# independent fix classes (instruction-level, then structural) both failed
-# identically on this exact field, which is the project's own bar for
-# treating a detection guard as sufficient rather than continuing to chase
-# a third prompt-level attempt (see §8.1e's P0 closure reasoning).
-#
-# This fix instead excludes key_user_flows from the creation-diff bullets
-# Scribe ever sees, rather than reshaping it -- there is nothing left to
-# copy if it was never shown. This is judged in-scope, not a workaround:
-# an ADR records system/component decisions, and a step-by-step user
-# journey was never decision-relevant content in the first place, only
-# copy-bait that happened to survive two rounds of fixes aimed at its
-# shape rather than its presence. The change is still real, so it's still
-# counted toward hunk_count (Judge's adrs_per_diff denominator) even
-# though it's never rendered into the prompt -- the same bullets-vs-metric
-# split summarize_diff()/hunk_count_from_diff() already use elsewhere in
-# this file.
-_FLOW_ARROW_RE = re.compile(r"\s*->\s*")
-
-
-def _terse_flow_label(flow_text: str) -> str:
-    """Collapse one key_user_flows narrative string down to its trigger
-    clause and a step count, dropping the "->"-chained middle and end
-    entirely. E.g. "Customer types a question -> Retrieval Service
-    fetches chunks -> Generation Service answers -> customer rates it"
-    becomes "Customer types a question (4-step flow)".
-
-    No longer called from summarize_creation_diff() as of 21 Aug 2026 --
-    see the module note above. key_user_flows is now excluded from the
-    prompt entirely rather than reshaped, since reshaping alone was
-    confirmed not to stop the copying (workflow 8b89bcad-...). Left
-    defined, not deleted, since removing dead code is a separate cleanup
-    decision from this behavioral fix (one variable at a time)."""
-    segments = _FLOW_ARROW_RE.split(flow_text.strip())
-    trigger = segments[0].strip().rstrip(".")
-    step_count = len(segments)
-    return f"{trigger} ({step_count}-step flow)" if step_count > 1 else trigger
-
-
 def summarize_creation_diff(
     current_spec: ArchitectureSpec, max_items: int = 8
 ) -> tuple[str, int]:
@@ -482,17 +424,6 @@ def summarize_creation_diff(
             }
             for subkey, sublist in list_subfields.items():
                 if subkey == "key_user_flows":
-                    # Confirmed copy-bait under two independent fix
-                    # attempts (instruction-level, then structural
-                    # reformatting via the now-unused _terse_flow_label())
-                    # -- see the module note above this function. Excluded
-                    # from the prompt entirely rather than reshaped again:
-                    # nothing left to copy if it's never shown. Still a
-                    # real change, so it still counts toward hunk_count
-                    # (Judge's adrs_per_diff denominator) even with no
-                    # bullet in the prompt text -- same bullets-vs-metric
-                    # split hunk_count_from_diff() already uses for the
-                    # incremental-diff path.
                     hunk_count += 1
                     continue
                 bullets.append(f"Added {key}.{subkey}: {sublist!r}")
