@@ -15,6 +15,8 @@ same shape Scribe already takes for its own blackboard read.
 """
 import json
 import os
+import re
+from difflib import SequenceMatcher
 
 import httpx
 from pydantic import ValidationError
@@ -118,6 +120,18 @@ def _detect_cross_field_duplication(parsed: dict) -> list[str]:
     underlying findings as full sentences. _detect_duplicate_list_items()
     correctly found no *within-list* repetition on that run and stayed
     silent -- this guard covers the cross-field axis it doesn't.
+
+    P2 closed on guard coverage, not model behavior (21 Aug 2026, same
+    reasoning as P0's 19 Aug closure) -- exact cross-field overlap and
+    verbatim gap-restatement are both caught before approval. NOT caught:
+    a gap that paraphrases a spof/missing_integrations entry in different
+    words rather than restating it verbatim -- reusing Scribe's
+    SequenceMatcher-against-fixed-example pattern doesn't transfer here,
+    since both sides of the comparison are dynamic, length-mismatched
+    model output (a one-line entry vs. a full gap sentence), not a known
+    string to match against. Logged as a known limitation (same class as
+    Scribe's Rubber Stamp Risk, spec §7), not pursued further -- P2 is
+    explicitly non-blocking for §9.
     """
     warnings = []
     spofs = [s.strip().lower() for s in (parsed.get("spofs") or [])]
@@ -149,6 +163,97 @@ def _detect_cross_field_duplication(parsed: dict) -> list[str]:
         )
 
     return warnings
+
+
+# CRITIC_SYSTEM_PROMPT's WORKED FORMAT EXAMPLE (OrderService/NotificationService,
+# an e-commerce domain unrelated to this pipeline) is meant to demonstrate output
+# depth/specificity, not to be reused as content. Discovered 21 Aug 2026, while
+# testing the P2 cross-field-duplication guard: on tests/smoke/test_critic.py's
+# weak-Postgres fixture (which has nothing to do with orders, notifications, or
+# SMS), 2 of 5 sampled runs at temperature=0.2 echoed the example's literal text
+# into gaps/spofs/missing_integrations -- one badly enough to break JSON parsing.
+# Same failure class as Scribe's P0 example-copying bug, just never previously
+# exercised on Critic. Kept in sync manually with CRITIC_SYSTEM_PROMPT's example;
+# if the example changes, update this set too.
+_EXAMPLE_OUTPUT_STRINGS = {
+    "Inventory lookups and order writes share one service with no separation, "
+    "risking read load starving write throughput.",
+    "OrderService is a single instance handling both critical paths with no "
+    "stated redundancy.",
+    "NotificationService references an SMS provider via Rel but no external "
+    "system is declared for it in the components list.",
+}
+
+_COPY_SIMILARITY_THRESHOLD = 0.90
+
+_ARTICLE_RE = re.compile(r"\b(a|an|the)\b")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+# Proper nouns unique to the worked example's fictional e-commerce domain -- a
+# real spec run through this pipeline (architecture review specs, per README)
+# will not legitimately contain these, so this is a safe plain substring check,
+# same zero-false-positive-risk class as Scribe's _DIFF_SYNTAX_TOKENS.
+_EXAMPLE_DOMAIN_TOKENS = ("orderservice", "notificationservice", "sms provider")
+
+
+def _normalize_for_comparison(text: str) -> str:
+    """Lowercase, strip articles, and collapse whitespace before a fuzzy
+    compare. Mirrors agents/scribe.py's helper of the same name."""
+    text = _WHITESPACE_RE.sub(" ", text.strip().lower())
+    text = _ARTICLE_RE.sub("", text)
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _detect_example_copying(parsed: dict) -> list[str]:
+    """Flags any gaps/spofs/missing_integrations list entry that closely
+    matches CRITIC_SYSTEM_PROMPT's worked example text -- exact OR
+    near-verbatim (>=90% similar after normalizing case/whitespace/articles).
+    Same pattern as agents/scribe.py's _detect_example_copying(), applied to
+    list fields instead of single strings.
+    """
+    copied = []
+    spofs = parsed.get("spofs") or []
+    missing = parsed.get("missing_integrations") or []
+    gap_descs = [g.get("description", "") for g in (parsed.get("gaps") or [])]
+
+    for field, items in (("spofs", spofs), ("missing_integrations", missing), ("gaps", gap_descs)):
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            normalized = _normalize_for_comparison(item)
+            for example in _EXAMPLE_OUTPUT_STRINGS:
+                ratio = SequenceMatcher(
+                    None, normalized, _normalize_for_comparison(example)
+                ).ratio()
+                if ratio >= _COPY_SIMILARITY_THRESHOLD:
+                    copied.append(field)
+                    break
+            else:
+                continue
+            break
+    return copied
+
+
+def _detect_example_domain_leak(parsed: dict) -> list[str]:
+    """Flags any gaps/spofs/missing_integrations entry containing a proper
+    noun unique to the worked example's fictional domain (OrderService,
+    NotificationService, SMS provider) -- catches a domain leak that's been
+    reworded enough to fall below the fuzzy-match threshold above. Same
+    pattern as agents/scribe.py's _detect_example_domain_leak()."""
+    leaked = []
+    spofs = parsed.get("spofs") or []
+    missing = parsed.get("missing_integrations") or []
+    gap_descs = [g.get("description", "") for g in (parsed.get("gaps") or [])]
+
+    for field, items in (("spofs", spofs), ("missing_integrations", missing), ("gaps", gap_descs)):
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            lowered = item.lower()
+            if any(token in lowered for token in _EXAMPLE_DOMAIN_TOKENS):
+                leaked.append(field)
+                break
+    return leaked
 
 
 def summarize_components(components: list[Component]) -> str:
@@ -243,5 +348,20 @@ async def run_critic(
     cross_field_warnings = _detect_cross_field_duplication(parsed)
     for w in cross_field_warnings:
         print(f"WARNING: {w}")
+
+    copied_fields = _detect_example_copying(parsed)
+    if copied_fields:
+        print(
+            f"WARNING: Critic output for {copied_fields} closely matches "
+            f"(exact or near-verbatim) a worked-example string from the system prompt"
+        )
+
+    leaked_fields = _detect_example_domain_leak(parsed)
+    if leaked_fields:
+        print(
+            f"WARNING: Critic output for {leaked_fields} contains a worked-example "
+            f"domain token (OrderService/NotificationService/SMS provider) unrelated "
+            f"to this spec -- POSSIBLE EXAMPLE LEAK -- FLAG FOR HUMAN REVIEW"
+        )
 
     return validated
