@@ -372,6 +372,214 @@ def build_user_prompt(
     )
 
 
+def _find_matching_bracket(text: str, open_idx: int, open_ch: str, close_ch: str) -> int | None:
+    """Given text[open_idx] == open_ch, return the index of its matching
+    close_ch, skipping over bracket/brace characters inside double-quoted
+    strings (respecting backslash escapes). Returns None if unbalanced.
+
+    Generic over the bracket pair so it covers both '[...]' (spofs /
+    missing_integrations, flat lists) and '{...}' (individual gap objects)
+    with one implementation -- unlike agents/scribe.py's version of this
+    helper, which is '[...]'-only since every field Scribe salvages is a
+    flat string, never a list of objects."""
+    depth = 0
+    in_string = False
+    i = open_idx
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == open_ch:
+                depth += 1
+            elif ch == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return None
+
+
+def _extract_field_bracket(stripped: str, field: str) -> str | None:
+    """Return the '[...]' substring for `field` (e.g. the value of
+    '"spofs": [...]'), or None if the field key isn't present in the raw
+    output at all -- distinct from the field being present but empty
+    ('"spofs": []', which returns '[]')."""
+    match = re.search(rf'"{field}"\s*:\s*\[', stripped)
+    if not match:
+        return None
+    open_idx = match.end() - 1
+    close_idx = _find_matching_bracket(stripped, open_idx, "[", "]")
+    return stripped[open_idx:close_idx + 1] if close_idx is not None else stripped[open_idx:]
+
+
+def _salvage_string_list_field(stripped: str, field: str) -> list[str]:
+    """Best-effort recovery for a list-of-strings field (spofs,
+    missing_integrations) when the overall JSON document is malformed.
+
+    Same fallback strategy as agents/scribe.py's _salvage_list_valued_
+    field(): json.loads() the field's own bracket span first (the rest of
+    the document can be broken while this one field's array is still
+    well-formed on its own); if that also fails, regex-extract whatever
+    quoted substrings are present rather than giving up entirely. Unlike
+    Scribe, this is Critic's PRIMARY recovery path for these two fields,
+    not a fallback for a wrong-shaped scalar -- spofs/missing_integrations
+    are supposed to be lists already.
+
+    Returns [] (not a placeholder string) if nothing usable is found. An
+    empty list is a legitimate CriticOutput value here -- the system
+    prompt explicitly allows "no SPOFs found" -- so standing in an empty
+    list for unrecoverable content isn't dishonest the way Scribe's
+    MISSING-placeholder problem would be for a required non-empty string
+    field.
+    """
+    bracket_text = _extract_field_bracket(stripped, field)
+    if bracket_text is None:
+        return []
+    try:
+        parsed_list = json.loads(bracket_text)
+        if isinstance(parsed_list, list):
+            return [str(item).strip() for item in parsed_list if str(item).strip()]
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return [s.strip() for s in re.findall(r'"((?:[^"\\]|\\.)*)"', bracket_text) if s.strip()]
+
+
+_GAP_SEVERITIES = {"low", "medium", "high"}
+_GAP_SALVAGE_PREFIX = "SALVAGED (recovered from malformed JSON) -- FLAG FOR HUMAN REVIEW: "
+
+
+def _coerce_gap(obj: dict) -> dict:
+    """Normalize one recovered gap object to CriticOutput's Gap shape.
+    severity defaults to 'medium' if missing or not one of the three
+    allowed values; related_component defaults to None if missing.
+    Prefixed the same way every other guard/salvage path in this file
+    flags recovered content, so a human reviewer can tell salvaged output
+    apart from a clean generation at a glance."""
+    severity = obj.get("severity")
+    if severity not in _GAP_SEVERITIES:
+        severity = "medium"
+    return {
+        "description": f"{_GAP_SALVAGE_PREFIX}{obj['description']}",
+        "severity": severity,
+        "related_component": obj.get("related_component"),
+    }
+
+
+def _salvage_gap_objects(stripped: str) -> tuple[list[dict], int]:
+    """Best-effort recovery for 'gaps' -- a list of {description, severity,
+    related_component} objects, not a flat string list, so neither
+    agents/scribe.py's nor Critic's own _salvage_string_list_field()
+    applies directly.
+
+    Confirmed failure shape (tests/smoke/test_critic.py, 21 Aug 2026): a
+    missing delimiter BETWEEN two gap objects broke json.loads() on the
+    whole array even though every individual object was well-formed on
+    its own -- 'Expecting , delimiter' at the boundary between two
+    otherwise-valid dicts.
+
+    Strategy: locate the 'gaps' array span, try json.loads() on the whole
+    thing first (cheap, and correct whenever the array itself is fine).
+    If that fails, scan the span for balanced '{...}' object spans
+    (respecting quoted strings, reusing the same bracket-matching logic
+    as the list fields) regardless of whether a comma correctly separates
+    them, and json.loads() each span independently. A span that parses
+    and has a non-empty 'description' is kept; a span that still doesn't
+    parse is DROPPED, not fabricated -- there is no honest way to invent
+    gap content the model never successfully produced. CriticOutput's
+    gaps list tolerates ending up shorter than the model likely intended,
+    or even empty, without that being a false claim -- "fewer gaps
+    recovered" is not the same statement as "no gaps exist". The caller
+    logs how many objects were dropped so this isn't silent.
+
+    Returns (gaps, dropped_count).
+    """
+    bracket_text = _extract_field_bracket(stripped, "gaps")
+    if bracket_text is None:
+        return [], 0
+
+    try:
+        parsed_list = json.loads(bracket_text)
+        if isinstance(parsed_list, list):
+            gaps = [
+                _coerce_gap(item)
+                for item in parsed_list
+                if isinstance(item, dict) and item.get("description")
+            ]
+            return gaps, 0
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    gaps: list[dict] = []
+    dropped = 0
+    i = 0
+    n = len(bracket_text)
+    while i < n:
+        if bracket_text[i] == "{":
+            close_idx = _find_matching_bracket(bracket_text, i, "{", "}")
+            if close_idx is None:
+                # Unterminated final object -- nothing more to scan after this.
+                dropped += 1
+                break
+            candidate = bracket_text[i:close_idx + 1]
+            try:
+                obj = json.loads(candidate)
+                if isinstance(obj, dict) and obj.get("description"):
+                    gaps.append(_coerce_gap(obj))
+                else:
+                    dropped += 1
+            except (json.JSONDecodeError, ValueError):
+                dropped += 1
+            i = close_idx + 1
+        else:
+            i += 1
+
+    return gaps, dropped
+
+
+def _salvage_malformed_critic_output(raw: str) -> dict:
+    """Best-effort recovery when LFM produces structurally malformed JSON
+    on a *complete* Critic generation (finish_reason != 'length' --
+    truncation is ruled out by run_critic() before this is ever called).
+
+    Same motivating failure class as agents/scribe.py's
+    _salvage_truncated_scribe_output(cause='malformed_json'), ported to
+    Critic's different schema shape rather than reused directly: Scribe's
+    fields are all flat strings, Critic's 'gaps' is a list of nested
+    objects, so the recovery strategy has to differ even though the
+    underlying philosophy (extract what parsed, flag what's uncertain,
+    never fabricate) is the same.
+
+    Before this existed, any malformed-JSON generation raised a bare
+    ValueError and cost a full DBOS retry (or, worse, exhausted all 3
+    attempts and failed the whole step) even when most of the content --
+    frequently all of spofs and missing_integrations, and most of gaps --
+    was perfectly recoverable. This salvages each field independently so
+    a single delimiter typo doesn't discard an otherwise-good critique.
+    """
+    stripped = strip_code_fence(raw)
+    spofs = _salvage_string_list_field(stripped, "spofs")
+    missing_integrations = _salvage_string_list_field(stripped, "missing_integrations")
+    gaps, dropped = _salvage_gap_objects(stripped)
+
+    if dropped:
+        print(
+            f"WARNING: Critic malformed-JSON salvage recovered {len(gaps)} "
+            f"gap object(s) but could not parse {dropped} more -- those "
+            f"entries are dropped, not fabricated, since there's no honest "
+            f"way to reconstruct content the model didn't successfully "
+            f"produce. Recovered gaps are flagged inline (SALVAGED)."
+        )
+
+    return {"gaps": gaps, "spofs": spofs, "missing_integrations": missing_integrations}
+
+
 async def run_critic(
     architect_output: ArchitectOutput,
     adr_output: ADROutput,
@@ -420,8 +628,18 @@ async def run_critic(
 
     try:
         parsed = json.loads(strip_code_fence(raw))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Critic: LFM did not return valid JSON: {raw[:200]}") from e
+        salvage_reason = None
+    except json.JSONDecodeError:
+        # Same treatment as agents/scribe.py's malformed_json branch:
+        # print the raw output once for debugging (capped, not truncated
+        # at the JSON error's char offset, since that offset is a hint,
+        # not a guarantee the fault is exactly there), then attempt
+        # field-by-field recovery instead of raising and burning a retry
+        # that would likely reproduce the same delimiter/structural error
+        # deterministically at low temperature.
+        print(f"DEBUG: Critic raw output (malformed_json, first 2000 chars):\n{raw[:2000]}")
+        parsed = _salvage_malformed_critic_output(raw)
+        salvage_reason = "malformed_json"
 
     # Guard-wiring fix (21 Aug 2026): every guard below now mutates `parsed`
     # in place -- prefixing the specific flagged entries -- BEFORE
@@ -472,10 +690,10 @@ async def run_critic(
             f"(POSSIBLE EXAMPLE COPY (fictional-domain term))."
         )
 
-    if dup_fields or cross_field_fields or copied_fields or leaked_fields:
+    if salvage_reason or dup_fields or cross_field_fields or copied_fields or leaked_fields:
         print(
-            "INFO: Critic output was salvaged (one or more guards flagged "
-            "entries above)."
+            f"INFO: Critic output was salvaged (reason={salvage_reason}, "
+            f"guard_flags={dup_fields or cross_field_fields or copied_fields or leaked_fields})."
         )
 
     try:
