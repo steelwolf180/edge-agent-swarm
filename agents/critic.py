@@ -209,6 +209,8 @@ def _flag_cross_field_duplication(parsed: dict) -> list[str]:
     # exact match -- catches the reworded-into-a-sentence case.
     gaps = parsed.get("gaps") or []
     gaps_changed = False
+    spofs_to_flag: set[str] = set()
+    missing_to_flag: set[str] = set()
     for g in gaps:
         if not isinstance(g, dict):
             continue
@@ -216,11 +218,43 @@ def _flag_cross_field_duplication(parsed: dict) -> list[str]:
         low = desc.strip().lower()
         if _already_flagged(desc):
             continue
-        if any(s and s in low for s in spofs_keys) or any(m and m in low for m in missing_keys):
+        matched_spofs = {s for s in spofs_keys if s and s in low}
+        matched_missing = {m for m in missing_keys if m and m in low}
+        if matched_spofs or matched_missing:
             g["description"] = f"{_CROSS_FIELD_FLAG_PREFIX}{desc}"
             gaps_changed = True
+            spofs_to_flag |= matched_spofs
+            missing_to_flag |= matched_missing
     if gaps_changed:
         flagged_fields.append("gaps")
+
+    # Guard-asymmetry fix (21 Aug 2026): a gap matching a spofs/missing_
+    # integrations entry via substring means that entry is duplicated too,
+    # not just the gap. Pre-fix, only the gap side got flagged -- a
+    # reviewer scanning missing_integrations or spofs in isolation would
+    # see the duplicated entry with no marker at all. Confirmed live on
+    # workflow 873af0ae-...: missing_integrations[1] ("No explicit
+    # handling of potential API rate limits...") is byte-identical to
+    # gaps[1]'s description, which WAS flagged CROSS-FIELD DUPLICATE --
+    # missing_integrations[1] itself was not.
+    if spofs_to_flag:
+        parsed["spofs"] = [
+            f"{_CROSS_FIELD_FLAG_PREFIX}{item}"
+            if isinstance(item, str) and item.strip().lower() in spofs_to_flag and not _already_flagged(item)
+            else item
+            for item in parsed.get("spofs") or []
+        ]
+        if "spofs" not in flagged_fields:
+            flagged_fields.append("spofs")
+    if missing_to_flag:
+        parsed["missing_integrations"] = [
+            f"{_CROSS_FIELD_FLAG_PREFIX}{item}"
+            if isinstance(item, str) and item.strip().lower() in missing_to_flag and not _already_flagged(item)
+            else item
+            for item in parsed.get("missing_integrations") or []
+        ]
+        if "missing_integrations" not in flagged_fields:
+            flagged_fields.append("missing_integrations")
 
     return flagged_fields
 
@@ -341,6 +375,136 @@ def _flag_example_domain_leak(parsed: dict) -> list[str]:
         return any(token in lowered for token in _EXAMPLE_DOMAIN_TOKENS)
 
     return _flag_list_and_gap_items(parsed, matches, _EXAMPLE_DOMAIN_LEAK_FLAG_PREFIX)
+
+
+# --- Diagram relationship echo (P5, 21 Aug 2026) -----------------------
+#
+# Confirmed live on workflow 873af0ae-...: all three `spofs` entries were
+# scrambled restatements of a single Rel() edge from the Architect's own
+# diagram (Rel(customer, rag_system, "Sends support queries via Support
+# Chat Widget")) -- e.g. "Support Chat Widget receives support queries
+# from RAG System" -- not genuine redundancy/resilience analysis. None of
+# the guards above caught it: not a within-field duplicate (three distinct
+# strings), not a cross-field duplicate (no overlap with gaps/missing_
+# integrations), and not a copy of CRITIC_SYSTEM_PROMPT's fixed worked
+# example (the leaked content is from the diagram, not the prompt).
+#
+# Unlike the P2 gap-vs-spof paraphrase case (ruled out in
+# _flag_cross_field_duplication's docstring -- no fixed anchor, both sides
+# are dynamic model output), this failure DOES have a fixed anchor
+# available: architect_output.context_diagram is already part of this
+# run's input, known before Critic ever runs. So the same
+# "known-string-to-compare-against" pattern Scribe uses for its
+# diff-syntax/example-domain guards applies here too, just anchored on the
+# diagram instead of a hardcoded example.
+#
+# SequenceMatcher (used for _flag_example_copying, above) is the wrong
+# tool for this specific failure shape: hand-checking workflow
+# 873af0ae-...'s entries against their source Rel label scores ~0.7 on
+# character-level similarity even for the closest-matching entry, well
+# under the 0.90 threshold used elsewhere in this file -- word-order
+# scrambling and reworded verbs ("sends" -> "receives") defeat a
+# character-alignment comparison. Bag-of-words token overlap (order-
+# independent, coarse trailing-'s' stem) is used instead.
+
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with",
+    "via", "from", "by", "at", "is", "are", "this", "that", "as", "it",
+}
+
+_REL_RE = re.compile(r'Rel\w*\(\s*(\w+)\s*,\s*(\w+)\s*,\s*"([^"]*)"')
+
+# Vocabulary that indicates genuine resilience/redundancy analysis rather
+# than a restated diagram edge. An entry that scores high on Rel-label
+# token overlap AND contains none of these is very likely paraphrasing a
+# Rel() line rather than analyzing it -- a real SPOF/gap finding about the
+# same component pair would typically reach for language like this
+# instead of (or alongside) the Rel's own connector vocabulary. Kept
+# deliberately short and unambiguous (same zero-false-positive-risk
+# design as _EXAMPLE_DOMAIN_TOKENS) rather than exhaustive.
+_RESILIENCE_VOCAB = (
+    "single", "redundan", "failover", "outage", "unavailable", "bottleneck",
+    "backup", "downtime", "point of failure", "no fallback",
+)
+
+# Confirmed empirically against workflow 873af0ae-...'s output (21 Aug
+# 2026): all three spofs entries score 0.50-1.0 against their source Rel
+# text; that run's genuine gap descriptions ("No explicit separation of
+# concerns...", "No explicit documentation of the data flow...") score
+# 0.20-0.29 -- a wide, comfortable margin. 0.50 (not the initially-tried
+# 0.55, which missed the weakest of the three confirmed echo entries) is
+# the threshold, still well above the highest legitimate-content score
+# observed so far.
+_REL_OVERLAP_THRESHOLD = 0.50
+_DIAGRAM_ECHO_FLAG_PREFIX = "POSSIBLE DIAGRAM RELATIONSHIP ECHO -- FLAG FOR HUMAN REVIEW: "
+
+
+def _significant_tokens(text: str) -> set[str]:
+    """Lowercased words of length >=4, stopwords dropped, trailing 's'
+    stripped for a cheap singular/plural match (system/systems). Coarse
+    on purpose -- the failure mode being caught is word salvage from a
+    Rel() line into scrambled/reordered prose, not a clean verbatim copy,
+    so phrase order is deliberately ignored."""
+    words = re.findall(r"[a-z]+", text.lower())
+    out = set()
+    for w in words:
+        if len(w) < 4 or w in _STOPWORDS:
+            continue
+        out.add(w[:-1] if w.endswith("s") and len(w) > 4 else w)
+    return out
+
+
+def _extract_rel_texts(context_diagram: str, components: list[Component]) -> list[str]:
+    """One combined text blob per Rel() edge in the Mermaid source: the
+    source/target component display names (falling back to the raw id if
+    a component isn't in the components list, e.g. an undeclared id) plus
+    the Rel's own label text."""
+    id_to_name = {c.id: c.name for c in components}
+    texts = []
+    for src, dst, label in _REL_RE.findall(context_diagram or ""):
+        src_name = id_to_name.get(src, src)
+        dst_name = id_to_name.get(dst, dst)
+        texts.append(f"{src_name} {dst_name} {label}")
+    return texts
+
+
+def _flag_diagram_relationship_echo(
+    parsed: dict,
+    context_diagram: str,
+    components: list[Component],
+) -> list[str]:
+    """Flags AND mutates any spofs/missing_integrations/gaps entry that
+    substantially reuses the words of one of the diagram's own Rel()
+    edges -- the model restating "X sends Y via Z" (or a direction-
+    scrambled variant) as if it were a finding, instead of producing
+    actual SPOF/gap analysis. See the module-level note above this
+    function for the confirming run and why token overlap (not
+    SequenceMatcher) is used here.
+
+    Requires the entry to contain NONE of _RESILIENCE_VOCAB, so a genuine
+    SPOF finding that happens to mention the same component pair as a Rel
+    edge isn't misflagged just for sharing vocabulary with the diagram --
+    SPOFs are often legitimately *about* a component that also appears in
+    Rel edges.
+    """
+    rel_texts = _extract_rel_texts(context_diagram, components)
+    rel_token_sets = [s for s in (_significant_tokens(t) for t in rel_texts) if len(s) >= 3]
+    if not rel_token_sets:
+        return []
+
+    def matches(text: str) -> bool:
+        low = text.lower()
+        if any(v in low for v in _RESILIENCE_VOCAB):
+            return False
+        entry_tokens = _significant_tokens(text)
+        if len(entry_tokens) < 3:
+            return False
+        return any(
+            len(entry_tokens & rel_tokens) / len(entry_tokens) >= _REL_OVERLAP_THRESHOLD
+            for rel_tokens in rel_token_sets
+        )
+
+    return _flag_list_and_gap_items(parsed, matches, _DIAGRAM_ECHO_FLAG_PREFIX)
 
 
 def summarize_components(components: list[Component]) -> str:
@@ -690,10 +854,21 @@ async def run_critic(
             f"(POSSIBLE EXAMPLE COPY (fictional-domain term))."
         )
 
-    if salvage_reason or dup_fields or cross_field_fields or copied_fields or leaked_fields:
+    echo_fields = _flag_diagram_relationship_echo(
+        parsed, architect_output.context_diagram, architect_output.components
+    )
+    if echo_fields:
+        print(
+            f"WARNING: Critic output for {echo_fields} substantially "
+            f"reuses the words of a Rel() edge from the Architect's own "
+            f"diagram instead of producing genuine SPOF/gap analysis. "
+            f"Flagged inline (POSSIBLE DIAGRAM RELATIONSHIP ECHO)."
+        )
+
+    if salvage_reason or dup_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields:
         print(
             f"INFO: Critic output was salvaged (reason={salvage_reason}, "
-            f"guard_flags={dup_fields or cross_field_fields or copied_fields or leaked_fields})."
+            f"guard_flags={dup_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields})."
         )
 
     try:
