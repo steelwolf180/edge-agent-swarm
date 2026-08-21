@@ -80,31 +80,74 @@ def strip_code_fence(raw: str) -> str:
             stripped = stripped.rstrip()[:-3]
     return stripped.strip()
 
-def _detect_duplicate_list_items(parsed: dict) -> list[str]:
-    """Flag any list field (spofs, missing_integrations, gap descriptions)
-    containing an exact-duplicate entry. Boundary backstop for degenerate
-    output (e.g. the same spof sentence repeated N times) that schema
-    validation alone won't catch -- CriticOutput doesn't enforce uniqueness.
+_DUPLICATE_FLAG_PREFIX = "POSSIBLE DUPLICATE -- FLAG FOR HUMAN REVIEW: "
+
+
+def _already_flagged(text: str) -> bool:
+    """True if `text` already carries one of this module's flag prefixes.
+    Checked before every mutation below so a re-run over already-flagged
+    output (or two guards matching the same item) never double-wraps it."""
+    return isinstance(text, str) and text.startswith(("POSSIBLE ",))
+
+
+def _flag_duplicate_list_items(parsed: dict) -> list[str]:
+    """Detect AND flag exact-duplicate entries within spofs,
+    missing_integrations, and gap descriptions -- mutates `parsed` in
+    place, mirroring agents/scribe.py's inline-flag pattern, instead of
+    only logging. The pre-fix version (print-only, no mutation) is the
+    confirmed root cause of workflow a9b0d6df-...'s spofs repetition
+    reaching the persisted review doc unflagged despite the guard
+    correctly detecting it in the log -- see KICKOFF_CHECKLIST.md's
+    review of that run. Every occurrence of a repeated entry is flagged,
+    not just the first duplicate found (the pre-fix version also stopped
+    at one warning per field via `break`), so a human reviewing the
+    output sees exactly which entries are suspect, not just that
+    *something* in the field repeats.
     """
-    warnings = []
+    flagged_fields = []
+
     for field in ("spofs", "missing_integrations"):
         items = parsed.get(field) or []
-        seen = set()
+        counts: dict[str, int] = {}
         for item in items:
-            key = item.strip().lower()
-            if key in seen:
-                warnings.append(
-                    f"Critic output for '{field}' contains a duplicate entry: {item[:80]!r}"
-                )
-                break
-            seen.add(key)
-    # gaps is a list of dicts -- compare on 'description'
-    gap_descs = [g.get("description", "").strip().lower() for g in (parsed.get("gaps") or [])]
-    if len(gap_descs) != len(set(gap_descs)):
-        warnings.append("Critic output for 'gaps' contains a duplicate description.")
-    return warnings
+            if isinstance(item, str) and item.strip():
+                key = item.strip().lower()
+                counts[key] = counts.get(key, 0) + 1
+        if not any(c > 1 for c in counts.values()):
+            continue
+        new_items = []
+        for item in items:
+            key = item.strip().lower() if isinstance(item, str) else None
+            if key and counts.get(key, 0) > 1 and not _already_flagged(item):
+                new_items.append(f"{_DUPLICATE_FLAG_PREFIX}{item}")
+            else:
+                new_items.append(item)
+        parsed[field] = new_items
+        flagged_fields.append(field)
 
-def _detect_cross_field_duplication(parsed: dict) -> list[str]:
+    gaps = parsed.get("gaps") or []
+    gap_keys = [
+        g.get("description", "").strip().lower() if isinstance(g, dict) else ""
+        for g in gaps
+    ]
+    gap_counts: dict[str, int] = {}
+    for k in gap_keys:
+        if k:
+            gap_counts[k] = gap_counts.get(k, 0) + 1
+    if any(c > 1 for c in gap_counts.values()):
+        for g, k in zip(gaps, gap_keys):
+            if k and gap_counts.get(k, 0) > 1 and isinstance(g, dict):
+                desc = g.get("description", "")
+                if not _already_flagged(desc):
+                    g["description"] = f"{_DUPLICATE_FLAG_PREFIX}{desc}"
+        flagged_fields.append("gaps")
+
+    return flagged_fields
+
+_CROSS_FIELD_FLAG_PREFIX = "POSSIBLE CROSS-FIELD DUPLICATE -- FLAG FOR HUMAN REVIEW: "
+
+
+def _flag_cross_field_duplication(parsed: dict) -> list[str]:
     """spofs and missing_integrations are semantically distinct categories --
     a SPOF is a redundancy/resilience risk, a missing integration is an
     undeclared dependency. Identical (or near-identical) entries across the
@@ -117,52 +160,69 @@ def _detect_cross_field_duplication(parsed: dict) -> list[str]:
 
     Confirmed live on workflow 59e4e1b2-...: spofs and missing_integrations
     were identical entry-for-entry (3/3), gaps repeated the same three
-    underlying findings as full sentences. _detect_duplicate_list_items()
+    underlying findings as full sentences. _flag_duplicate_list_items()
     correctly found no *within-list* repetition on that run and stayed
     silent -- this guard covers the cross-field axis it doesn't.
 
-    P2 closed on guard coverage, not model behavior (21 Aug 2026, same
-    reasoning as P0's 19 Aug closure) -- exact cross-field overlap and
-    verbatim gap-restatement are both caught before approval. NOT caught:
-    a gap that paraphrases a spof/missing_integrations entry in different
-    words rather than restating it verbatim -- reusing Scribe's
-    SequenceMatcher-against-fixed-example pattern doesn't transfer here,
-    since both sides of the comparison are dynamic, length-mismatched
-    model output (a one-line entry vs. a full gap sentence), not a known
-    string to match against. Logged as a known limitation (same class as
-    Scribe's Rubber Stamp Risk, spec §7), not pursued further -- P2 is
-    explicitly non-blocking for §9.
-    """
-    warnings = []
-    spofs = [s.strip().lower() for s in (parsed.get("spofs") or [])]
-    missing = [s.strip().lower() for s in (parsed.get("missing_integrations") or [])]
+    As of 21 Aug 2026 (critic-guard-wiring fix), this mutates `parsed` in
+    place instead of only returning warning strings -- the pre-fix version
+    detected correctly but never touched the output, which is the same
+    class of bug (detection without action) confirmed separately on
+    _flag_duplicate_list_items() via workflow a9b0d6df-.... Every guard in
+    this file now follows the same inline-flag contract Scribe's guards
+    already use.
 
-    spofs_set = set(spofs)
-    missing_set = set(missing)
-    exact_overlap = spofs_set & missing_set
+    Still NOT caught: a gap that paraphrases a spof/missing_integrations
+    entry in different words rather than restating it verbatim -- reusing
+    Scribe's SequenceMatcher-against-fixed-example pattern doesn't
+    transfer here, since both sides of the comparison are dynamic,
+    length-mismatched model output (a one-line entry vs. a full gap
+    sentence), not a known string to match against. Logged as a known
+    limitation (same class as Scribe's Rubber Stamp Risk, spec §7), not
+    pursued further -- non-blocking for §9.
+    """
+    flagged_fields = []
+    spofs = parsed.get("spofs") or []
+    missing = parsed.get("missing_integrations") or []
+
+    spofs_keys = {s.strip().lower() for s in spofs if isinstance(s, str)}
+    missing_keys = {m.strip().lower() for m in missing if isinstance(m, str)}
+    exact_overlap = spofs_keys & missing_keys
+
     if exact_overlap:
-        warnings.append(
-            f"Critic 'spofs' and 'missing_integrations' share "
-            f"{len(exact_overlap)} identical entr{'y' if len(exact_overlap) == 1 else 'ies'} "
-            f"-- not distinct analysis categories on this run."
-        )
+        parsed["spofs"] = [
+            f"{_CROSS_FIELD_FLAG_PREFIX}{item}"
+            if isinstance(item, str) and item.strip().lower() in exact_overlap and not _already_flagged(item)
+            else item
+            for item in spofs
+        ]
+        parsed["missing_integrations"] = [
+            f"{_CROSS_FIELD_FLAG_PREFIX}{item}"
+            if isinstance(item, str) and item.strip().lower() in exact_overlap and not _already_flagged(item)
+            else item
+            for item in missing
+        ]
+        flagged_fields.extend(["spofs", "missing_integrations"])
 
     # gaps is prose, so check whether a gap description contains a spof or
     # missing_integrations entry as a substring rather than requiring an
     # exact match -- catches the reworded-into-a-sentence case.
-    gap_descs = [g.get("description", "").strip().lower() for g in (parsed.get("gaps") or [])]
-    reworded_hits = 0
-    for gap in gap_descs:
-        if any(s and s in gap for s in spofs_set) or any(m and m in gap for m in missing_set):
-            reworded_hits += 1
-    if reworded_hits:
-        warnings.append(
-            f"Critic 'gaps' contains {reworded_hits} description(s) that "
-            f"restate a 'spofs' or 'missing_integrations' entry rather than "
-            f"offering distinct analysis."
-        )
+    gaps = parsed.get("gaps") or []
+    gaps_changed = False
+    for g in gaps:
+        if not isinstance(g, dict):
+            continue
+        desc = g.get("description", "")
+        low = desc.strip().lower()
+        if _already_flagged(desc):
+            continue
+        if any(s and s in low for s in spofs_keys) or any(m and m in low for m in missing_keys):
+            g["description"] = f"{_CROSS_FIELD_FLAG_PREFIX}{desc}"
+            gaps_changed = True
+    if gaps_changed:
+        flagged_fields.append("gaps")
 
-    return warnings
+    return flagged_fields
 
 
 # CRITIC_SYSTEM_PROMPT's WORKED FORMAT EXAMPLE (OrderService/NotificationService,
@@ -204,56 +264,83 @@ def _normalize_for_comparison(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
-def _detect_example_copying(parsed: dict) -> list[str]:
-    """Flags any gaps/spofs/missing_integrations list entry that closely
-    matches CRITIC_SYSTEM_PROMPT's worked example text -- exact OR
-    near-verbatim (>=90% similar after normalizing case/whitespace/articles).
-    Same pattern as agents/scribe.py's _detect_example_copying(), applied to
-    list fields instead of single strings.
-    """
-    copied = []
-    spofs = parsed.get("spofs") or []
-    missing = parsed.get("missing_integrations") or []
-    gap_descs = [g.get("description", "") for g in (parsed.get("gaps") or [])]
+_EXAMPLE_COPY_FLAG_PREFIX = "POSSIBLE EXAMPLE COPY -- FLAG FOR HUMAN REVIEW: "
+_EXAMPLE_DOMAIN_LEAK_FLAG_PREFIX = "POSSIBLE EXAMPLE COPY (fictional-domain term) -- FLAG FOR HUMAN REVIEW: "
 
-    for field, items in (("spofs", spofs), ("missing_integrations", missing), ("gaps", gap_descs)):
+
+def _flag_list_and_gap_items(parsed: dict, matches, prefix: str) -> list[str]:
+    """Shared mutation helper for the two guards below: given a `matches(text)
+    -> bool` predicate, rebuild spofs/missing_integrations (immutable str
+    entries -- must reassign the list) and mutate gaps' description dicts
+    in place (mutable, no reassignment needed), prefixing every entry that
+    matches and isn't already flagged. Returns the field names touched."""
+    flagged_fields = []
+
+    for field in ("spofs", "missing_integrations"):
+        items = parsed.get(field) or []
+        if not items:
+            continue
+        new_items = []
+        changed = False
         for item in items:
-            if not isinstance(item, str):
-                continue
-            normalized = _normalize_for_comparison(item)
-            for example in _EXAMPLE_OUTPUT_STRINGS:
-                ratio = SequenceMatcher(
-                    None, normalized, _normalize_for_comparison(example)
-                ).ratio()
-                if ratio >= _COPY_SIMILARITY_THRESHOLD:
-                    copied.append(field)
-                    break
+            if isinstance(item, str) and not _already_flagged(item) and matches(item):
+                new_items.append(f"{prefix}{item}")
+                changed = True
             else:
-                continue
-            break
-    return copied
+                new_items.append(item)
+        parsed[field] = new_items
+        if changed:
+            flagged_fields.append(field)
+
+    gaps = parsed.get("gaps") or []
+    gaps_changed = False
+    for g in gaps:
+        if not isinstance(g, dict):
+            continue
+        desc = g.get("description", "")
+        if isinstance(desc, str) and not _already_flagged(desc) and matches(desc):
+            g["description"] = f"{prefix}{desc}"
+            gaps_changed = True
+    if gaps_changed:
+        flagged_fields.append("gaps")
+
+    return flagged_fields
 
 
-def _detect_example_domain_leak(parsed: dict) -> list[str]:
-    """Flags any gaps/spofs/missing_integrations entry containing a proper
-    noun unique to the worked example's fictional domain (OrderService,
-    NotificationService, SMS provider) -- catches a domain leak that's been
-    reworded enough to fall below the fuzzy-match threshold above. Same
-    pattern as agents/scribe.py's _detect_example_domain_leak()."""
-    leaked = []
-    spofs = parsed.get("spofs") or []
-    missing = parsed.get("missing_integrations") or []
-    gap_descs = [g.get("description", "") for g in (parsed.get("gaps") or [])]
+def _flag_example_copying(parsed: dict) -> list[str]:
+    """Flags AND mutates any gaps/spofs/missing_integrations list entry
+    that closely matches CRITIC_SYSTEM_PROMPT's worked example text --
+    exact OR near-verbatim (>=90% similar after normalizing
+    case/whitespace/articles). Same pattern as agents/scribe.py's
+    _detect_example_copying(), applied to list fields instead of single
+    strings. As of the critic-guard-wiring fix, mutates in place via
+    _flag_list_and_gap_items() rather than only returning field names for
+    a caller to log -- the pre-fix version detected but never flagged the
+    persisted output, same gap confirmed on the duplicate-item guard."""
+    def matches(text: str) -> bool:
+        normalized = _normalize_for_comparison(text)
+        return any(
+            SequenceMatcher(None, normalized, _normalize_for_comparison(example)).ratio()
+            >= _COPY_SIMILARITY_THRESHOLD
+            for example in _EXAMPLE_OUTPUT_STRINGS
+        )
 
-    for field, items in (("spofs", spofs), ("missing_integrations", missing), ("gaps", gap_descs)):
-        for item in items:
-            if not isinstance(item, str):
-                continue
-            lowered = item.lower()
-            if any(token in lowered for token in _EXAMPLE_DOMAIN_TOKENS):
-                leaked.append(field)
-                break
-    return leaked
+    return _flag_list_and_gap_items(parsed, matches, _EXAMPLE_COPY_FLAG_PREFIX)
+
+
+def _flag_example_domain_leak(parsed: dict) -> list[str]:
+    """Flags AND mutates any gaps/spofs/missing_integrations entry
+    containing a proper noun unique to the worked example's fictional
+    domain (OrderService, NotificationService, SMS provider) -- catches a
+    domain leak that's been reworded enough to fall below the fuzzy-match
+    threshold above. Same pattern as agents/scribe.py's
+    _detect_example_domain_leak(). Mutates in place as of the
+    critic-guard-wiring fix -- see _flag_example_copying()'s note."""
+    def matches(text: str) -> bool:
+        lowered = text.lower()
+        return any(token in lowered for token in _EXAMPLE_DOMAIN_TOKENS)
+
+    return _flag_list_and_gap_items(parsed, matches, _EXAMPLE_DOMAIN_LEAK_FLAG_PREFIX)
 
 
 def summarize_components(components: list[Component]) -> str:
@@ -336,32 +423,64 @@ async def run_critic(
     except json.JSONDecodeError as e:
         raise ValueError(f"Critic: LFM did not return valid JSON: {raw[:200]}") from e
 
+    # Guard-wiring fix (21 Aug 2026): every guard below now mutates `parsed`
+    # in place -- prefixing the specific flagged entries -- BEFORE
+    # CriticOutput.model_validate() runs, and it's the validated *mutated*
+    # dict that gets returned. The pre-fix version validated `parsed` into
+    # `validated` first, then ran these same detectors afterward as
+    # print-only warnings that never touched `validated` -- so a correctly
+    # detected problem (confirmed live: workflow a9b0d6df-...'s duplicate
+    # spofs) could still reach the persisted review doc completely
+    # unflagged. Order mirrors scribe.py's guard sequence: most specific /
+    # highest-confidence pattern first (exact duplicates), most general
+    # last (fictional-domain leak), and every guard checks
+    # _already_flagged() before writing so two guards matching the same
+    # entry never double-wrap it.
+    dup_fields = _flag_duplicate_list_items(parsed)
+    if dup_fields:
+        print(
+            f"WARNING: Critic output for {dup_fields} contained exact-"
+            f"duplicate entries -- flagged inline (POSSIBLE DUPLICATE) "
+            f"rather than retried, same reasoning as Scribe's guards at "
+            f"low temperature: a retry is likely to reproduce the same "
+            f"degenerate output."
+        )
+
+    cross_field_fields = _flag_cross_field_duplication(parsed)
+    if cross_field_fields:
+        print(
+            f"WARNING: Critic output for {cross_field_fields} overlaps "
+            f"across spofs/missing_integrations/gaps -- these are meant to "
+            f"be distinct analysis categories, not the same finding "
+            f"restated. Flagged inline (POSSIBLE CROSS-FIELD DUPLICATE)."
+        )
+
+    copied_fields = _flag_example_copying(parsed)
+    if copied_fields:
+        print(
+            f"WARNING: Critic output for {copied_fields} closely matches "
+            f"(exact or near-verbatim) a worked-example string from the "
+            f"system prompt. Flagged inline (POSSIBLE EXAMPLE COPY)."
+        )
+
+    leaked_fields = _flag_example_domain_leak(parsed)
+    if leaked_fields:
+        print(
+            f"WARNING: Critic output for {leaked_fields} contains a "
+            f"worked-example domain token (OrderService/NotificationService/"
+            f"SMS provider) unrelated to this spec. Flagged inline "
+            f"(POSSIBLE EXAMPLE COPY (fictional-domain term))."
+        )
+
+    if dup_fields or cross_field_fields or copied_fields or leaked_fields:
+        print(
+            "INFO: Critic output was salvaged (one or more guards flagged "
+            "entries above)."
+        )
+
     try:
         validated = CriticOutput.model_validate(parsed)
     except ValidationError as e:
         raise ValueError(f"Critic: LFM output failed CriticOutput validation: {e}") from e
-
-    dup_warnings = _detect_duplicate_list_items(parsed)
-    for w in dup_warnings:
-        print(f"WARNING: {w}")  # match whatever logging call scribe.py actually uses here
-
-    cross_field_warnings = _detect_cross_field_duplication(parsed)
-    for w in cross_field_warnings:
-        print(f"WARNING: {w}")
-
-    copied_fields = _detect_example_copying(parsed)
-    if copied_fields:
-        print(
-            f"WARNING: Critic output for {copied_fields} closely matches "
-            f"(exact or near-verbatim) a worked-example string from the system prompt"
-        )
-
-    leaked_fields = _detect_example_domain_leak(parsed)
-    if leaked_fields:
-        print(
-            f"WARNING: Critic output for {leaked_fields} contains a worked-example "
-            f"domain token (OrderService/NotificationService/SMS provider) unrelated "
-            f"to this spec -- POSSIBLE EXAMPLE LEAK -- FLAG FOR HUMAN REVIEW"
-        )
 
     return validated
