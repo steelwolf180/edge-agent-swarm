@@ -883,6 +883,7 @@ _ALREADY_FLAGGED_PREFIXES = (
     "POSSIBLE EXAMPLE COPY",
     "POSSIBLE DIFF-SYNTAX LEAK",
     "POSSIBLE PLACEHOLDER LEAK",
+    "POSSIBLE DIFF BULLET ECHO",
     "NON-STRING OUTPUT",
     "LIST-COERCED",
 )
@@ -957,6 +958,89 @@ def _detect_diff_dump(parsed: dict, diff_summary: str) -> list[str]:
         and len(value) > diff_len * _DIFF_DUMP_LENGTH_RATIO
     ):
         flagged.append("diff_summary")
+
+    return flagged
+
+
+# Threshold for "this field is basically one diff bullet, reworded only
+# slightly (or not at all)". Same mechanism and comparison function as
+# _detect_example_copying() (SequenceMatcher ratio on normalized text),
+# just pointed at the real diff instead of the fixed worked-example
+# strings -- kept slightly below the example-copy threshold (0.90) since
+# a diff bullet is dynamic per-run content, not a fixed string to match
+# exactly, and the confirmed failure case (below) was a 100% match anyway,
+# so there's room for a small tolerance margin without weakening the
+# guard against the failure it exists for.
+_DIFF_ECHO_SIMILARITY_THRESHOLD = 0.85
+
+# summarize_diff() (incremental path) prefixes each bullet with "- ";
+# summarize_creation_diff() (creation path) does not. Stripped before
+# comparison so the same guard covers both diff shapes without the
+# leading marker itself dragging the ratio down on the incremental path.
+_BULLET_PREFIX_RE = re.compile(r"^-\s*")
+
+
+def _detect_diff_bullet_echo(parsed: dict, diff_summary: str) -> list[str]:
+    """Flags decision/consequences/diff_summary when it's a near-verbatim
+    copy of a SINGLE bullet from the real diff -- as opposed to
+    _detect_diff_dump() (near-total copy of the WHOLE diff, by length/word
+    count) or _detect_ungrounded_content() (near-ZERO overlap with the
+    diff at all). This is the gap between those two: a short field that
+    echoes one bullet almost word-for-word is neither long enough to trip
+    the diff-dump length thresholds nor low-overlap enough to trip the
+    ungrounded-content check -- it sails through both clean.
+
+    Confirmed live (workflow a9b0d6df-..., 21 Aug 2026, cloud_rag.json
+    creation diff, after the key_user_flows exclusion fix landed): with
+    the copy-tempting key_user_flows bullet removed from the prompt
+    entirely, the model reached for the next-easiest target instead --
+    the shortest, simplest bullet in the diff:
+        diff bullet:   "Added project_overview: purpose, target_users,
+                         deployment_environment"
+        decision:      "Added project_overview: purpose, target_users,
+                         deployment_environment"          (identical)
+        diff_summary:  "Added project_overview: purpose, target_users,
+                         deployment_environment."          (near-identical)
+    Neither field is long enough or diff-sized enough to trip
+    _detect_diff_dump() (diff_summary's own overall length is large across
+    all 11 hunks, but this one field is short), and both fields obviously
+    share plenty of real vocabulary with the diff, so
+    _detect_ungrounded_content() has nothing to flag either -- the
+    opposite problem from what that guard targets. No existing guard
+    covers this pattern.
+
+    'consequences' is intentionally still checked here (unlike
+    _detect_ungrounded_content(), which skips it) -- a field that's
+    supposed to state a downstream implication has no legitimate reason
+    to be a verbatim echo of what changed, whereas Example 3's
+    correct-answer 'consequences' text (see _detect_ungrounded_content's
+    docstring) is a generalization, not a diff echo, so it won't
+    false-positive here either.
+    """
+    lines = [
+        _BULLET_PREFIX_RE.sub("", line).strip()
+        for line in diff_summary.splitlines()
+        if line.strip()
+    ]
+    if not lines or diff_summary.strip() == "No field-level changes detected.":
+        # Nothing to echo against, or this IS the legitimate zero-diff
+        # case -- already covered by _detect_example_copying()'s own
+        # zero-diff branch, not this guard's concern.
+        return []
+
+    normalized_lines = [_normalize_for_comparison(line) for line in lines]
+
+    flagged = []
+    for field in ("decision", "consequences", "diff_summary"):
+        value = parsed.get(field)
+        if not isinstance(value, str) or value.startswith(_ALREADY_FLAGGED_PREFIXES):
+            continue
+        normalized_value = _normalize_for_comparison(value)
+        for normalized_line in normalized_lines:
+            ratio = SequenceMatcher(None, normalized_value, normalized_line).ratio()
+            if ratio >= _DIFF_ECHO_SIMILARITY_THRESHOLD:
+                flagged.append(field)
+                break
 
     return flagged
 
@@ -1283,6 +1367,24 @@ async def run_scribe(
         for field in diff_dump_fields:
             parsed[field] = f"POSSIBLE DIFF DUMP (field reproduces large fraction of diff, not a short paraphrase) -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
         salvage_reason = salvage_reason or "diff_dump"
+
+    echo_fields = _detect_diff_bullet_echo(parsed, diff_summary)
+    if echo_fields:
+        print(
+            f"WARNING: Scribe output for {echo_fields} is a near-verbatim "
+            f"echo of a single real diff bullet -- short enough to dodge "
+            f"_detect_diff_dump()'s length/word-count thresholds and "
+            f"sharing too much vocabulary with the diff to trip "
+            f"_detect_ungrounded_content(), but still not the paraphrase "
+            f"FORMATTING RULES requires (confirmed on workflow "
+            f"a9b0d6df-...: 'decision' and 'diff_summary' both echoed the "
+            f"project_overview bullet almost character-for-character). "
+            f"Flagging inline rather than retrying, same reasoning as the "
+            f"other guards at temperature=0.05."
+        )
+        for field in echo_fields:
+            parsed[field] = f"POSSIBLE DIFF BULLET ECHO (near-verbatim copy of one diff bullet, not a paraphrase) -- FLAG FOR HUMAN REVIEW: {parsed[field]}"
+        salvage_reason = salvage_reason or "diff_bullet_echo"
 
     if salvage_reason:
         # Not part of ADROutput's schema -- logged, not persisted, so it can't
