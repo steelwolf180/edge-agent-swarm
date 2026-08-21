@@ -1111,11 +1111,31 @@ revisit only if a live resubmit-unchanged flow is planned on stage.
 
 **Status:** Unblocked, started 19 Aug 2026.
 
-- [ ] Verify `revision_cycles` rows exist for today's six rejected
+- [x] Verify `revision_cycles` rows exist for today's six rejected
   `cloud_rag.json` workflows (`b67bea1a`, `34876593`, `166ad426`,
   `b0d73799`, `7e7b0948`, `8b89bcad`) — data already exists, query only.
-- [ ] Verify `judge_scores.json` persisted per run with `spec_version`
+  **Confirmed (21 Aug 2026):** all six `pipeline_runs` rows have
+  `status='rejected'` and a matching `revision_cycles` row (ids 16–21,
+  timestamps 19 Aug 16:54–19:11), and correctly zero `artifacts` rows
+  each — rejection path doesn't touch that table, per README's design.
+- [x] Verify `judge_scores.json` persisted per run with `spec_version`
   reference for the same six workflows — query only.
+  **Unrecoverable, item's premise was wrong (21 Aug 2026):**
+  `judge_scores` is a JSONB column on the `artifacts` table only, written
+  on approval (`pipeline/persistence.py:236`) — there is no separate
+  `judge_scores.json` file, and rejected runs never populate it by
+  design. Checked for an alternate trail before giving up: Arize Phoenix
+  is reachable (`localhost:6006`, HTTP 200) but its `default` project
+  reports `traceCount: 0` — no OTel/Phoenix instrumentation actually
+  exists anywhere in `agents/` or `pipeline/` (grep for
+  `phoenix|opentelemetry|otlp` returns nothing), so no spans were ever
+  emitted for any run, not just these six. `run.py`'s stdout is also
+  never redirected to a file by `scripts/run_pipeline.sh`, so the 19 Aug
+  terminal scrollback is gone. No data exists to verify against; nothing
+  to recover. Judge scores for these six runs are permanently
+  unrecoverable — acceptable since the runs were rejected and never
+  meant to persist, but flags that the Observability Checks section
+  below isn't just deferred, it's genuinely unimplemented.
 - [ ] Produce a real approved run (any spec, not necessarily
   `cloud_rag.json`) to generate `artifacts/v1/*.md` content —
   `cloud_rag.json` stays on record 6-for-6 rejected, not pursued
@@ -1127,8 +1147,15 @@ revisit only if a live resubmit-unchanged flow is planned on stage.
 
 ## Observability Checks (run throughout, not just at the end)
 
-- [ ] Arize Phoenix reachable at `localhost:6006`
+- [x] Arize Phoenix reachable at `localhost:6006` — confirmed 21 Aug 2026 (HTTP 200).
 - [ ] Per-agent OTel spans visible in Phoenix UI (system prompt, tool calls, latency, model)
+  — **not a stale checkbox, a real gap (confirmed 21 Aug 2026):** GraphQL query
+  against Phoenix's own API shows `traceCount: 0` on the only project
+  (`default`). No OTel/Phoenix instrumentation is wired into this codebase
+  at all — `agents/` and `pipeline/` have zero imports of
+  `phoenix`/`opentelemetry`/`otlp`. Every run so far, approved or
+  rejected, produced no spans. Surfaced while chasing the §9 judge_scores
+  item above; not scoped or fixed this session.
 - [ ] `lm-sensors` readable from Python thermal guard step
 
 ---
