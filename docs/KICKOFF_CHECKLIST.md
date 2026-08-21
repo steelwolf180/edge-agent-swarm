@@ -470,6 +470,46 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   token-budget pressure late in the output), not a general list-repetition
   tendency. **Session started same day to fix this** — see status line
   below.
+
+  **P2 closed on guard coverage (21 Aug 2026), same reasoning as P0's 19
+  Aug closure — not closed on model behavior.** `_detect_cross_field_
+  duplication()` (`agents/critic.py`) catches both confirmed failure
+  shapes: exact cross-field overlap (spofs == missing_integrations
+  entry-for-entry) and verbatim gap-restates-entry (via substring
+  containment). Landed 20 Aug; re-checked today whether the remaining gap
+  — a gap description that *paraphrases* a spofs/missing_integrations
+  entry rather than restating it verbatim or via substring — was worth
+  closing with a fuzzy matcher. Ruled out: unlike Scribe's
+  `SequenceMatcher`-vs-fixed-worked-example pattern, this would compare
+  two pieces of dynamic, length-mismatched model output (a one-line entry
+  vs. a full gap sentence) with no known string as the anchor — a new,
+  untuned mechanism, not a reusable pattern. Explicitly deprioritized:
+  P2 is non-blocking for §9, which has had no forward progress since 19
+  Aug. Paraphrase-level cross-field duplication logged as a known
+  limitation (same class as Scribe's Rubber Stamp Risk, spec §7), not
+  scheduled.
+
+  **New finding, same session (21 Aug 2026): Critic worked-example leak
+  (P4), fixed.** Discovered incidentally while re-running
+  `tests/smoke/test_critic.py` to confirm P2's closure hadn't broken
+  anything -- `CRITIC_SYSTEM_PROMPT`'s WORKED FORMAT EXAMPLE
+  (OrderService/NotificationService/SMS provider, an e-commerce domain
+  unrelated to this pipeline) leaked into real output on 2 of 5 sampled
+  runs at temperature=0.2, against a Postgres-only test fixture with
+  nothing to do with orders or notifications. One occurrence broke JSON
+  parsing outright (`json.decoder.JSONDecodeError`); the other passed
+  validation with leaked content undetected, since no existing Critic
+  guard checked for this -- same failure class as Scribe's P0
+  example-copying bug, just never previously exercised on Critic. Fixed
+  by porting Scribe's proven pattern (not a new mechanism, unlike P2's
+  ruled-out fuzzy matcher): `_detect_example_copying()`
+  (`SequenceMatcher` fuzzy match against `_EXAMPLE_OUTPUT_STRINGS`, 0.90
+  threshold) + `_detect_example_domain_leak()` (plain substring check
+  against `_EXAMPLE_DOMAIN_TOKENS` — OrderService/NotificationService/SMS
+  provider, zero false-positive risk since real specs in this pipeline
+  won't contain these). Both wired into `run_critic()` alongside the
+  existing duplicate/cross-field guards. Confirmed firing correctly on
+  re-run: domain-leak guard caught the leak on run 2 of a 5-run batch.
 - [ ] **Architect `technology` list-vs-string (P3, self-heals via retry)** —
   add prompt instruction (join to comma string) + boundary coercion in
   `parse_model_sections()`, mirroring `_coerce_adr_string_fields()`.
