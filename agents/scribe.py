@@ -374,12 +374,28 @@ def _non_empty_field_names(section: dict) -> list[str]:
 # The very next run (workflow 7e7b0948-...) reproduced byte-identical
 # 'decision'/'diff_summary' text to a run from *before* that instruction
 # existed -- a clean, deterministic null result, not a partial improvement.
-# Same lesson as the §8.1b diff-syntax-token fix: an instruction not to
-# copy a shape doesn't hold when that shape is still sitting in the input.
-# This removes the "->"-chain shape at the source instead -- each flow is
-# reduced to its trigger clause (before the first "->") plus a step count,
-# which preserves enough for a grounded ADR to reference without handing
-# the model a ready-made multi-step narrative to copy wholesale.
+#
+# Confirmed NOT fixable by structural reformatting either (21 Aug 2026):
+# _terse_flow_label() (below, kept for reference / possible future reuse,
+# no longer called) collapsed each flow to its trigger clause + step count,
+# removing the "->"-chain shape entirely -- and the very next run
+# (workflow 8b89bcad-...) copied the shortened list wholesale anyway. Two
+# independent fix classes (instruction-level, then structural) both failed
+# identically on this exact field, which is the project's own bar for
+# treating a detection guard as sufficient rather than continuing to chase
+# a third prompt-level attempt (see §8.1e's P0 closure reasoning).
+#
+# This fix instead excludes key_user_flows from the creation-diff bullets
+# Scribe ever sees, rather than reshaping it -- there is nothing left to
+# copy if it was never shown. This is judged in-scope, not a workaround:
+# an ADR records system/component decisions, and a step-by-step user
+# journey was never decision-relevant content in the first place, only
+# copy-bait that happened to survive two rounds of fixes aimed at its
+# shape rather than its presence. The change is still real, so it's still
+# counted toward hunk_count (Judge's adrs_per_diff denominator) even
+# though it's never rendered into the prompt -- the same bullets-vs-metric
+# split summarize_diff()/hunk_count_from_diff() already use elsewhere in
+# this file.
 _FLOW_ARROW_RE = re.compile(r"\s*->\s*")
 
 
@@ -388,7 +404,14 @@ def _terse_flow_label(flow_text: str) -> str:
     clause and a step count, dropping the "->"-chained middle and end
     entirely. E.g. "Customer types a question -> Retrieval Service
     fetches chunks -> Generation Service answers -> customer rates it"
-    becomes "Customer types a question (4-step flow)"."""
+    becomes "Customer types a question (4-step flow)".
+
+    No longer called from summarize_creation_diff() as of 21 Aug 2026 --
+    see the module note above. key_user_flows is now excluded from the
+    prompt entirely rather than reshaped, since reshaping alone was
+    confirmed not to stop the copying (workflow 8b89bcad-...). Left
+    defined, not deleted, since removing dead code is a separate cleanup
+    decision from this behavioral fix (one variable at a time)."""
     segments = _FLOW_ARROW_RE.split(flow_text.strip())
     trigger = segments[0].strip().rstrip(".")
     step_count = len(segments)
@@ -430,6 +453,9 @@ def summarize_creation_diff(
     """
     dump = current_spec.model_dump()
     bullets: list[str] = []
+    hunk_count = 0  # counted independently of len(bullets) -- see
+    # key_user_flows below, which is a real change (increments this) but
+    # is never turned into a bullet the LLM sees.
 
     for key, value in dump.items():
         if value in (None, "", [], {}):
@@ -437,6 +463,7 @@ def summarize_creation_diff(
 
         if isinstance(value, list):
             bullets.append(f"Added {key}: {value!r}")
+            hunk_count += 1
             continue
 
         if isinstance(value, dict):
@@ -455,26 +482,34 @@ def summarize_creation_diff(
             }
             for subkey, sublist in list_subfields.items():
                 if subkey == "key_user_flows":
-                    # See _terse_flow_label()'s note above -- these entries
-                    # are the one confirmed copy-tempting shape in this diff,
-                    # so they're reduced to trigger + step-count rather than
-                    # rendered as full "->"-chained narrative via repr().
-                    terse = [_terse_flow_label(flow) for flow in sublist]
-                    bullets.append(f"Added {key}.{subkey}: {terse!r}")
-                else:
-                    bullets.append(f"Added {key}.{subkey}: {sublist!r}")
+                    # Confirmed copy-bait under two independent fix
+                    # attempts (instruction-level, then structural
+                    # reformatting via the now-unused _terse_flow_label())
+                    # -- see the module note above this function. Excluded
+                    # from the prompt entirely rather than reshaped again:
+                    # nothing left to copy if it's never shown. Still a
+                    # real change, so it still counts toward hunk_count
+                    # (Judge's adrs_per_diff denominator) even with no
+                    # bullet in the prompt text -- same bullets-vs-metric
+                    # split hunk_count_from_diff() already uses for the
+                    # incremental-diff path.
+                    hunk_count += 1
+                    continue
+                bullets.append(f"Added {key}.{subkey}: {sublist!r}")
+                hunk_count += 1
 
             remaining = {k: v for k, v in value.items() if k not in list_subfields}
             named_fields = _non_empty_field_names(remaining)
             if named_fields:
                 bullets.append(f"Added {key}: {', '.join(named_fields)}")
+                hunk_count += 1
             continue
 
         # Bare top-level scalar -- not expected in the current schema shape,
         # but handled explicitly rather than silently dropped.
         bullets.append(f"Added {key}: {value!r}")
+        hunk_count += 1
 
-    hunk_count = len(bullets)
     summary = (
         "\n".join(bullets[:max_items]) if bullets else "No field-level changes detected."
     )
