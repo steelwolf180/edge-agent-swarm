@@ -79,6 +79,7 @@ WEAK_ADR_OUTPUT = ADROutput(
     decision="Use a single native PostgreSQL instance for all workflow and artifact state.",
     consequences="Postgres becomes the only persistence layer; no redundancy configured for MVP.",
     diff_summary="Added PostgreSQL as the sole state store; no prior version existed.",
+    diff_hunk_count=1,
     affected_diagrams=["context"],
 )
 
