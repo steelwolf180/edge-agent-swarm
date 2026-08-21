@@ -406,6 +406,26 @@ def _flag_example_domain_leak(parsed: dict) -> list[str]:
 # scrambling and reworded verbs ("sends" -> "receives") defeat a
 # character-alignment comparison. Bag-of-words token overlap (order-
 # independent, coarse trailing-'s' stem) is used instead.
+#
+# Second confirming run (workflow 9f651906-..., 21 Aug 2026, different
+# spec-derived diagram from 873af0ae-...): 15 of 18 spofs entries and 1 of
+# 4 missing_integrations correctly flagged, including entries that
+# reassigned the wrong component to a Rel's action (e.g. "Zendesk pulls
+# documents from Confluence API" -- the real edge is
+# Rel(ingestion_service, confluence, "Pulls documents from Confluence
+# API")) -- confirms the token-overlap approach generalizes past exact
+# component attribution, not just exact wording. BUT 3 entries slipped
+# through unflagged on that run:
+#   "Zendesk manages tickets and help center"
+#   "Confluence is source of truth for documentation"
+#   "Git repository is source of truth for versioned technical docs"
+# These restate a System_Ext(...) declaration's own description string
+# (its third argument), not a Rel() edge -- e.g. System_Ext(confluence,
+# "Confluence", "Source of truth for product documentation"). The
+# original anchor set (_extract_rel_texts()) only parsed Rel() lines, so
+# it had nothing to compare these against. _extract_declaration_texts()
+# below closes that gap by pulling System/System_Ext/Person declaration
+# names + descriptions into the same anchor set Rel() labels already feed.
 
 _STOPWORDS = {
     "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with",
@@ -413,6 +433,12 @@ _STOPWORDS = {
 }
 
 _REL_RE = re.compile(r'Rel\w*\(\s*(\w+)\s*,\s*(\w+)\s*,\s*"([^"]*)"')
+
+# Matches System(id, "Name", "Description"), System_Ext(id, "Name",
+# "Description"), and Person(id, "Name", "Description") -- the three C4
+# declaration constructs the spec's MVP scope (L1 System Context) uses.
+# System_Boundary and other constructs are out of scope until L2 (v2).
+_DECL_RE = re.compile(r'(?:System(?:_Ext)?|Person)\(\s*\w+\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\)')
 
 # Vocabulary that indicates genuine resilience/redundancy analysis rather
 # than a restated diagram edge. An entry that scores high on Rel-label
@@ -468,31 +494,63 @@ def _extract_rel_texts(context_diagram: str, components: list[Component]) -> lis
     return texts
 
 
+def _extract_declaration_texts(context_diagram: str) -> list[str]:
+    """One combined text blob per System/System_Ext/Person declaration in
+    the Mermaid source: the declared display name plus its description
+    string (the C4 declaration's third argument). Confirmed necessary on
+    workflow 9f651906-...: _extract_rel_texts() alone missed 3 of 18
+    spofs entries because the model echoed a declaration's own
+    description text (e.g. System_Ext(confluence, "Confluence", "Source
+    of truth for product documentation")) rather than a Rel() edge label
+    -- same failure class, different diagram construct, so it needs its
+    own extractor rather than a tweak to the Rel-only one."""
+    return [f"{name} {description}" for name, description in _DECL_RE.findall(context_diagram or "")]
+
+
 def _flag_diagram_relationship_echo(
     parsed: dict,
     context_diagram: str,
     components: list[Component],
 ) -> list[str]:
-    """Flags AND mutates any spofs/missing_integrations/gaps entry that
-    substantially reuses the words of one of the diagram's own Rel()
-    edges -- the model restating "X sends Y via Z" (or a direction-
-    scrambled variant) as if it were a finding, instead of producing
-    actual SPOF/gap analysis. See the module-level note above this
-    function for the confirming run and why token overlap (not
-    SequenceMatcher) is used here.
+    """Flags AND mutates spofs/missing_integrations/gaps entries that
+    substantially reuse the words of one of the diagram's own Rel() edges,
+    and (spofs only -- see below) System/System_Ext/Person declaration
+    descriptions. See the module-level note above this function for the
+    confirming runs and why token overlap (not SequenceMatcher) is used
+    here.
 
-    Requires the entry to contain NONE of _RESILIENCE_VOCAB, so a genuine
-    SPOF finding that happens to mention the same component pair as a Rel
-    edge isn't misflagged just for sharing vocabulary with the diagram --
-    SPOFs are often legitimately *about* a component that also appears in
-    Rel edges.
+    Two anchor sets, deliberately different scope:
+
+    - Rel() edges are checked against ALL THREE fields (gaps, spofs,
+      missing_integrations), same as the original 873af0ae-... fix --
+      confirmed no false positives on real run data.
+    - Declaration descriptions are checked against SPOFS ONLY. Tried
+      checking all three fields first and confirmed (against
+      9f651906-...'s real missing_integrations list) that this produces
+      false positives there: "Zendesk API (help center articles + ticket
+      context)" scores 0.67 against System_Ext(zendesk, "Zendesk",
+      "Manages customer support tickets and help center")'s tokens, but
+      it's a genuinely correct missing_integrations entry, not an echo --
+      a correct description of what an integration does will always
+      legitimately share vocabulary with the diagram's own correct
+      description of that same component. spofs doesn't have this
+      problem: legitimate SPOF content is about redundancy/resilience
+      risk, not restating what a component is/does, so high overlap with
+      a plain declaration description is a reliable echo signal there in
+      a way it isn't for missing_integrations or gaps.
+
+    Requires the entry to contain NONE of _RESILIENCE_VOCAB in both
+    checks, so a genuine SPOF finding that happens to mention the same
+    component (or reuse some of its description's words) isn't misflagged
+    just for sharing vocabulary -- SPOFs are often legitimately *about* a
+    component that also appears in Rel edges or has its own declaration.
     """
+    flagged_fields: list[str] = []
+
     rel_texts = _extract_rel_texts(context_diagram, components)
     rel_token_sets = [s for s in (_significant_tokens(t) for t in rel_texts) if len(s) >= 3]
-    if not rel_token_sets:
-        return []
 
-    def matches(text: str) -> bool:
+    def matches_rel(text: str) -> bool:
         low = text.lower()
         if any(v in low for v in _RESILIENCE_VOCAB):
             return False
@@ -500,11 +558,44 @@ def _flag_diagram_relationship_echo(
         if len(entry_tokens) < 3:
             return False
         return any(
-            len(entry_tokens & rel_tokens) / len(entry_tokens) >= _REL_OVERLAP_THRESHOLD
-            for rel_tokens in rel_token_sets
+            len(entry_tokens & tokens) / len(entry_tokens) >= _REL_OVERLAP_THRESHOLD
+            for tokens in rel_token_sets
         )
 
-    return _flag_list_and_gap_items(parsed, matches, _DIAGRAM_ECHO_FLAG_PREFIX)
+    if rel_token_sets:
+        flagged_fields.extend(_flag_list_and_gap_items(parsed, matches_rel, _DIAGRAM_ECHO_FLAG_PREFIX))
+
+    decl_texts = _extract_declaration_texts(context_diagram)
+    decl_token_sets = [s for s in (_significant_tokens(t) for t in decl_texts) if len(s) >= 3]
+
+    def matches_decl(text: str) -> bool:
+        low = text.lower()
+        if any(v in low for v in _RESILIENCE_VOCAB):
+            return False
+        entry_tokens = _significant_tokens(text)
+        if len(entry_tokens) < 3:
+            return False
+        return any(
+            len(entry_tokens & tokens) / len(entry_tokens) >= _REL_OVERLAP_THRESHOLD
+            for tokens in decl_token_sets
+        )
+
+    if decl_token_sets:
+        spofs = parsed.get("spofs") or []
+        new_spofs = []
+        changed = False
+        for item in spofs:
+            if isinstance(item, str) and not _already_flagged(item) and matches_decl(item):
+                new_spofs.append(f"{_DIAGRAM_ECHO_FLAG_PREFIX}{item}")
+                changed = True
+            else:
+                new_spofs.append(item)
+        if changed:
+            parsed["spofs"] = new_spofs
+            if "spofs" not in flagged_fields:
+                flagged_fields.append("spofs")
+
+    return flagged_fields
 
 
 def summarize_components(components: list[Component]) -> str:
