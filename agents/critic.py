@@ -1004,10 +1004,10 @@ async def run_critic(
             f"Flagged inline (POSSIBLE DIAGRAM RELATIONSHIP ECHO)."
         )
 
-    if salvage_reason or dup_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields:
+    if salvage_reason or dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields:
         print(
             f"INFO: Critic output was salvaged (reason={salvage_reason}, "
-            f"guard_flags={dup_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields})."
+            f"guard_flags={dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields})."
         )
 
     try:
