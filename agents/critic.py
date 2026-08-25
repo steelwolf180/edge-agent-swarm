@@ -376,6 +376,45 @@ def _flag_example_domain_leak(parsed: dict) -> list[str]:
 
     return _flag_list_and_gap_items(parsed, matches, _EXAMPLE_DOMAIN_LEAK_FLAG_PREFIX)
 
+_NEAR_DUP_GAP_FLAG_PREFIX = "POSSIBLE NEAR-DUPLICATE GAP -- FLAG FOR HUMAN REVIEW: "
+_GAP_NEAR_DUP_THRESHOLD = 0.75  # gap sentences are same-shape/length, unlike
+# the cross-field case P2 ruled fuzzy-matching out for -- start here, tune
+# empirically against confirmed runs rather than guessing higher.
+
+def _flag_near_duplicate_gaps(parsed: dict) -> list[str]:
+    """Within-gaps near-duplicate check -- catches reworded restatements
+    of the same finding that _flag_duplicate_list_items()'s exact-match
+    check can't see. Confirmed live: workflow a5847e95-..., three gap
+    descriptions all describing the same missing Vector Store <-> LLM API
+    integration, worded three different ways, none byte-identical.
+    """
+    gaps = parsed.get("gaps") or []
+    descs = [
+        (i, g.get("description", "")) for i, g in enumerate(gaps)
+        if isinstance(g, dict) and isinstance(g.get("description"), str)
+    ]
+    flagged_idx = set()
+    for a in range(len(descs)):
+        i, text_a = descs[a]
+        if _already_flagged(text_a):
+            continue
+        for b in range(a + 1, len(descs)):
+            j, text_b = descs[b]
+            if _already_flagged(text_b):
+                continue
+            ratio = SequenceMatcher(
+                None, text_a.strip().lower(), text_b.strip().lower()
+            ).ratio()
+            if ratio >= _GAP_NEAR_DUP_THRESHOLD:
+                flagged_idx.add(i)
+                flagged_idx.add(j)
+
+    for i in flagged_idx:
+        desc = gaps[i].get("description", "")
+        if not _already_flagged(desc):
+            gaps[i]["description"] = f"{_NEAR_DUP_GAP_FLAG_PREFIX}{desc}"
+
+    return ["gaps"] if flagged_idx else []
 
 # --- Diagram relationship echo (P5, 21 Aug 2026) -----------------------
 #
@@ -918,7 +957,16 @@ async def run_critic(
             f"low temperature: a retry is likely to reproduce the same "
             f"degenerate output."
         )
-
+    
+    near_dup_gap_fields = _flag_near_duplicate_gaps(parsed)
+    if near_dup_gap_fields:
+        print(
+            f"WARNING: Critic output for {near_dup_gap_fields} contains "
+            f"reworded near-duplicate gap descriptions -- same underlying "
+            f"finding stated multiple times, not distinct issues. Flagged "
+            f"inline (POSSIBLE NEAR-DUPLICATE GAP)."
+        )
+    
     cross_field_fields = _flag_cross_field_duplication(parsed)
     if cross_field_fields:
         print(
