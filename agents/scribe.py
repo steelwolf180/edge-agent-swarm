@@ -404,7 +404,7 @@ def summarize_creation_diff(
             continue
 
         if isinstance(value, list):
-            bullets.append(f"Added {key}: {value!r}")
+            bullets.append(f"Added {key}: " + "; ".join(str(v) for v in value))
             hunk_count += 1
             continue
 
@@ -426,7 +426,7 @@ def summarize_creation_diff(
                 if subkey == "key_user_flows":
                     hunk_count += 1
                     continue
-                bullets.append(f"Added {key}.{subkey}: {sublist!r}")
+                bullets.append(f"Added {key}.{subkey}: " + "; ".join(str(v) for v in sublist))
                 hunk_count += 1
 
             remaining = {k: v for k, v in value.items() if k not in list_subfields}
@@ -438,7 +438,7 @@ def summarize_creation_diff(
 
         # Bare top-level scalar -- not expected in the current schema shape,
         # but handled explicitly rather than silently dropped.
-        bullets.append(f"Added {key}: {value!r}")
+        bullets.append(f"Added {key}: {value}")
         hunk_count += 1
 
     summary = (
