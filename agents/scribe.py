@@ -360,6 +360,18 @@ def _non_empty_field_names(section: dict) -> list[str]:
     return [k for k, v in section.items() if v not in (None, "", [], {})]
 
 
+_FIELD_LABELS = {
+    "core_features": "core features",
+    "integration_points": "integration points",
+    "key_user_flows": "key user flows",
+    "data_sources": "data sources",
+    "language_framework": "language/framework choices",
+    "existing_systems": "existing systems",
+}
+
+def _field_label(key: str) -> str:
+    return _FIELD_LABELS.get(key, key.replace("_", " "))
+
 def summarize_creation_diff(
     current_spec: ArchitectureSpec, max_items: int = 8
 ) -> tuple[str, int]:
@@ -404,7 +416,7 @@ def summarize_creation_diff(
             continue
 
         if isinstance(value, list):
-            bullets.append(f"Added {key}: " + "; ".join(str(v) for v in value))
+            bullets.append(f"Added {_field_label(key)}: " + "; ".join(str(v) for v in value))
             hunk_count += 1
             continue
 
@@ -426,7 +438,7 @@ def summarize_creation_diff(
                 if subkey == "key_user_flows":
                     hunk_count += 1
                     continue
-                bullets.append(f"Added {key}.{subkey}: " + "; ".join(str(v) for v in sublist))
+                bullets.append(f"New {_field_label(subkey)}: " + "; ".join(str(v) for v in sublist))
                 hunk_count += 1
 
             remaining = {k: v for k, v in value.items() if k not in list_subfields}
