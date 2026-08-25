@@ -416,7 +416,7 @@ def summarize_creation_diff(
             continue
 
         if isinstance(value, list):
-            bullets.append(f"Added {_field_label(key)}: " + "; ".join(str(v) for v in value))
+            bullets.append(f"New {_field_label(key)}: " + "; ".join(str(v) for v in value))
             hunk_count += 1
             continue
 
