@@ -1178,6 +1178,60 @@ as correct and non-regressive — this run's rejection is driven entirely by
 already-known, still-open model tendencies (diff-bullet echo, diagram/diff echo),
 not by anything newly broken.
 
+## 8.1h Attempt #11 — New missing_integrations Guard Confirmed Live, Scribe Regresses to Diff Dump (26 Aug 2026, workflow `2e821689-...`)
+
+- [x] `_flag_missing_integrations_without_gap_language()` confirmed working on a
+  real run, not just the retrospective test case it was built from: caught
+  "Hosted LLM API" and "Managed vector store (Pinecone or equivalent)" -- both
+  bare restatements with no gap language, both outside the existing
+  diagram-echo guard's anchor set (they didn't score high enough on Rel-token
+  overlap to trip that guard). "Hosted Embedding Model API" was caught by the
+  existing echo guard instead, confirming the two mechanisms are covering
+  genuinely different failure shapes as designed, not redundant with each
+  other.
+
+**Rejected.** Scribe: `decision`/`diff_summary` reverted to near-total diff
+dump (`reason=diff_dump`) rather than the single-bullet echo seen on attempt
+#10 -- a worse failure shape on this run, not a repeat. Both `_detect_diff_dump()`
+and `_detect_diff_bullet_echo()` fired on the same field and stacked their
+prefixes rather than one recognizing the other's flag as already-handled --
+logged as a small over-flagging cosmetic issue (nothing reaches review
+unflagged, just double-wrapped), not urgent.
+
+**New Critic finding, not a coverage gap:** `gaps`/`spofs` entries this run
+refer to Zendesk as two separate entities ("retrieval service" vs "retrieval
+system"), an entity-confusion/grounding error layered on top of the
+duplication itself. Already caught by existing duplicate/echo guards, so
+nothing reached the reviewer unflagged -- logged for pattern-tracking in case
+it recurs independent of duplication.
+
+**Status:** §9 still blocked. Attempt #11 rejected. New guard validated live;
+Scribe's diff-dump/echo tendency remains the primary open blocker, still
+guard-covered (nothing unflagged), not yet resolved at the prompt level.
+
+## 8.1i Scribe Diff-Density Tendency Closed on Guard Coverage (26 Aug 2026)
+
+Same reasoning as §8.1e's P0 closure (19 Aug 2026): reframed from "the model
+must not degenerate on dense diffs" to "nothing degenerate can reach approval
+unflagged." Two consecutive attempts against `cloud_rag.json`'s full 11-hunk
+creation diff (#10: single-bullet near-verbatim echo; #11: near-total diff
+dump) produced two distinct failure shapes, both caught before reaching the
+review doc unflagged, by existing guards (`_detect_diff_bullet_echo()`,
+`_detect_diff_dump()`). No instruction-level or structural fix has held
+against this model at this diff density across the full P0/§8.1 thread --
+same conclusion, not a new investigation.
+
+**Decision:** close pursuit of a root-cause fix for Scribe's dense-diff
+degeneration. `cloud_rag.json` stays on record as the stress fixture that
+established this guard coverage (now 2-for-2 on this specific tendency, on
+top of P0's earlier 6-for-6), not pursued toward a cleaner draw. §9's
+approval run will use a smaller/less dense spec instead -- this sidesteps the
+stress condition rather than fixing it, consistent with "decisive closure
+over gold-plating" and the project's actual bar (portfolio demo-readiness,
+not root-cause elimination on a 1.6B CPU model).
+
+**Status:** §9 unblocked pending spec selection for the approval run.
+
 ## 7.1 Infra Risk: `run_pipeline.sh`'s EXIT Trap Can Delete a Workflow Correctly Awaiting Review (20 Aug 2026)
 
 Surfaced by an accidental Ctrl-C on workflow `1f38387f-...` — hit *after*
