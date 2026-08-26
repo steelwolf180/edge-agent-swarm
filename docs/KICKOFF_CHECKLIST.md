@@ -1144,6 +1144,40 @@ open item, not scheduled this session — needs design thought (what does
 prompt patch, and per the project's own track record instruction-only
 fixes haven't held on this model.
 
+## 8.1g Attempt #10 — Guards Confirmed Working, New Coverage Gap Found (26 Aug 2026, workflow `ae941ea4-...`)
+
+Follow-up to yesterday's `scribe.py` line-419 fix and `critic.py` `near_dup_gap_fields`
+logging fix. Both confirmed correct on this run:
+
+- [x] `scribe.py` line 419 fix held — `open_questions`/list-valued top-level fields
+  processed without crashing (11-hunk creation diff, no NameError).
+- [x] `critic.py` `near_dup_gap_fields` logging fix confirmed: log correctly shows
+  `INFO: Critic output was salvaged (reason=None, guard_flags=['gaps'])` when it's
+  the only guard to fire.
+- [x] Bracket-leak fix (from attempt #9) continues to hold — zero brackets in
+  `decision`/`consequences`/`diff_summary` this run.
+
+**Rejected.** Scribe's diff-bullet-echo recurred (3rd known instance of this class,
+now confirmed not bullet-specific — `a9b0d6df-...` echoed `integration_points`,
+this run echoed `project_overview`). Caught correctly by `_detect_diff_bullet_echo()`,
+not a regression, but confirms the underlying copying tendency isn't resolving at
+the prompt level regardless of which bullet the model reaches for.
+
+**New finding: Critic diagram-echo guard has a coverage gap.**
+`missing_integrations` entry 2 ("Git-hosted docs repo... versioned documentation")
+went unflagged by `_flag_diagram_relationship_echo()` because it echoes the **Scribe
+diff's** integration_points bullet ("...versioned"), not the Architect's `Rel()`
+text — the guard only checks against diagram content, not spec-diff content. Same
+underlying copy-instead-of-analyze behavior as the flagged entries, just from a
+different source text the guard doesn't check. Logged as a new, distinct gap —
+not the same as P2 (cross-field duplication) or the existing Rel()-echo case.
+Not yet fixed.
+
+**Status:** §9 still blocked. Attempt #10 rejected. Both pre-run fixes validated
+as correct and non-regressive — this run's rejection is driven entirely by
+already-known, still-open model tendencies (diff-bullet echo, diagram/diff echo),
+not by anything newly broken.
+
 ## 7.1 Infra Risk: `run_pipeline.sh`'s EXIT Trap Can Delete a Workflow Correctly Awaiting Review (20 Aug 2026)
 
 Surfaced by an accidental Ctrl-C on workflow `1f38387f-...` — hit *after*
