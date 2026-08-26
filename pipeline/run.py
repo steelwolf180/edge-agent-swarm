@@ -54,6 +54,7 @@ eventually get written to Postgres/markdown in the approval-persistence step.
 
 from __future__ import annotations
 from datetime import datetime, timezone
+from pathlib import Path
 
 import argparse
 import asyncio
@@ -83,6 +84,8 @@ from pipeline.persistence import (
     insert_artifact_row,
     insert_revision_cycle_row,
 )
+from pipeline.review_render import render_markdown_from_outputs
+
 from schemas.architect import ArchitectOutput
 from schemas.critic import CriticOutput
 from schemas.judge import JudgeOutput
@@ -392,6 +395,23 @@ def persist_adr_step(adr_output: dict, spec_version: int, supersedes: list[str] 
     )
     return record.model_dump(mode="json")
 
+@DBOS.step()
+def generate_review_doc_step(workflow_id: str, outputs: dict) -> str:
+    """Writes artifacts/review/<workflow_id>.md + .json from in-memory agent
+    outputs, right after Judge finishes and before DBOS.recv() blocks — so
+    the doc exists by the time the terminal prints "Awaiting human review",
+    no separate `python pipeline/view_result.py <id>` call needed. Wrapped
+    as a step for the same reason as every other side-effecting call in
+    this file: if the workflow retries from an earlier step, this just
+    rewrites the doc, which is harmless for a review artifact.
+    """
+    out_dir = Path("artifacts/review")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    md_path = out_dir / f"{workflow_id}.md"
+    json_path = out_dir / f"{workflow_id}.json"
+    md_path.write_text(render_markdown_from_outputs(workflow_id, outputs))
+    json_path.write_text(json.dumps(outputs, indent=2, ensure_ascii=False))
+    return str(md_path)
 
 @DBOS.step()
 def persist_approval_step(
@@ -484,6 +504,18 @@ async def architecture_review_workflow(
         adr_count,
     )
     DBOS.logger.info("[5/5] Judge done. Awaiting human review.")
+    review_path = generate_review_doc_step(
+        DBOS.workflow_id,
+        {
+            "researcher_step": researcher_output,
+            "architect_step": architect_output,
+            "scribe_step": adr_output,
+            "critic_step": critic_output,
+            "judge_step": judge_output,
+        },
+    )
+    DBOS.logger.info(f"Review doc ready: {review_path}")
+    DBOS.logger.info("Awaiting human review.")
     compute_end_time = capture_timestamp_step()
 
     # ------------------------------------------------------------------
