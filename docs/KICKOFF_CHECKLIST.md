@@ -1285,9 +1285,49 @@ was never produced. Implemented and reviewed, not empirically confirmed.
 Accepted as low-risk for demo purposes (not a scripted demo path);
 revisit only if a live resubmit-unchanged flow is planned on stage.
 
+## 7.2 Review Doc Generation Automated (26 Aug 2026)
+
+Refactor closing the gap between "Judge finishes" and "human has something to
+read" — previously the review doc had to be produced by a separate manual
+step; it's now generated inline as part of the pipeline run itself.
+
+- [x] `generate_review_doc_step()` added to `run.py`, wired into the workflow
+  after Judge, before `DBOS.recv()` — produces both the `.json` and `.md`
+  review doc for the human-review gate as part of the run, not a follow-up
+  step. Confirmed correctly using `adr_output` for the Scribe-derived
+  fields (matching the same field mapping already validated elsewhere in
+  the pipeline).
+- [x] `pipeline/review_render.py` established as the **single source of
+  truth** for the rendering logic — both the inline `run.py` path and the
+  standalone `view_result.py` fallback call into it, rather than
+  duplicating rendering code across two entry points.
+- [x] `view_result.py` deliberately kept, not deleted, as an escape hatch
+  for three cases the inline path doesn't cover: regenerating a doc that
+  was deleted or never wrote; old workflows run before this change
+  existed (no inline doc was ever produced for them); and working from a
+  different machine/checkout, since it rebuilds from
+  `DBOS.list_workflow_steps()` / Postgres rather than in-memory state.
+- [x] **Bug caught and fixed during review:** a duplicate, broken copy of
+  the `generate_review_doc_step()` block had been pasted at module level
+  in `run.py` (between `persist_adr_step` and `persist_approval_step`,
+  outside any function), referencing undefined names
+  (`researcher_output`, `architect_output`, etc. — not in scope at module
+  level). This was separate from the correct, properly-scoped call inside
+  the workflow function. Confirmed removed; only the correctly-placed
+  in-workflow call remains.
+
+**Status (26 Aug 2026):** Review doc generation is now part of the pipeline
+run itself — no separate manual render step needed before human review.
+Unblocks a smoother §9 approval run (doc is ready the moment Judge
+finishes, nothing extra to run before `send_approval.py`).
+
+---
+
 ## 9. Paper Trail
 
-**Status:** Unblocked, started 19 Aug 2026.
+**Status:** Unblocked, started 19 Aug 2026. Review-doc generation now
+automated as of §7.2 (26 Aug 2026) — no manual render step needed before
+approving.
 
 - [x] Verify `revision_cycles` rows exist for today's six rejected
   `cloud_rag.json` workflows (`b67bea1a`, `34876593`, `166ad426`,
