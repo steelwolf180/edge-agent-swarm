@@ -637,6 +637,87 @@ def _flag_diagram_relationship_echo(
     return flagged_fields
 
 
+# Vocabulary that indicates a genuine gap statement -- an entry that
+# actually asserts something is missing/undocumented/unhandled, rather
+# than describing an integration that exists. Deliberately short and
+# unambiguous (same zero-false-positive-risk design as _RESILIENCE_VOCAB
+# and _EXAMPLE_DOMAIN_TOKENS): a correct missing_integrations entry will
+# almost always reach for language like this to say *what's absent*, and
+# a pure restatement of an existing Rel()/spec integration essentially
+# never will, since restating what something does doesn't require saying
+# it's missing.
+#
+# This exists as a separate mechanism from _flag_diagram_relationship_echo
+# on purpose. Extending that guard's overlap-with-source approach to check
+# missing_integrations against spec/diff text was considered and rejected:
+# a genuinely correct missing_integrations entry has to name the same
+# integration the spec/diff names, so it will always share heavy token
+# overlap with that source text -- this is the identical false-positive
+# class already confirmed on 9f651906-... for the declaration-anchor
+# check (a correct "Zendesk API..." entry scored 0.67 against Zendesk's
+# own declaration text). Overlap-with-source can't distinguish "restates
+# the source" from "correctly analyzes the same named thing." Checking
+# for the *absence* of gap-indicating vocabulary sidesteps that problem
+# entirely, since it doesn't compare against source text at all.
+_GAP_LANGUAGE_VOCAB = (
+    "missing", "not shown", "not represented", "not depicted", "not modeled",
+    "no explicit", "lacks", "lacking", "undocumented", "absent", "unclear",
+    "not defined", "not specified", "gap",
+)
+_MISSING_INTEGRATION_RESTATEMENT_FLAG_PREFIX = (
+    "POSSIBLE RESTATEMENT, NOT A GAP -- FLAG FOR HUMAN REVIEW: "
+)
+
+
+def _flag_missing_integrations_without_gap_language(parsed: dict) -> list[str]:
+    """Flags AND mutates missing_integrations entries that contain none of
+    _GAP_LANGUAGE_VOCAB -- i.e. entries that describe an integration
+    (what it is / what it does) without ever asserting that it's absent,
+    undocumented, or unhandled, which is what this field is actually
+    supposed to surface per CRITIC_SYSTEM_PROMPT.
+
+    Confirmed motivating case (workflow ae941ea4-..., 26 Aug 2026): all
+    three missing_integrations entries this run were pure restatements
+    ("RAG System interacts with X to do Y"), not gap statements. Two of
+    three happened to also score high enough on Rel()-token-overlap to
+    be caught by _flag_diagram_relationship_echo(); the third ("Git-
+    hosted docs repo... to pull versioned documentation") echoed the
+    Scribe diff's own integration_points bullet instead of a Rel() edge,
+    so it fell outside that guard's anchor set and went through
+    unflagged even though it has the identical underlying problem: no
+    gap asserted, not genuine missing_integrations analysis. This guard
+    targets the shared root symptom (no gap language) directly rather
+    than patching diagram_relationship_echo's anchor set to also cover
+    diff text, which would reintroduce the declaration-anchor false-
+    positive class documented above.
+
+    missing_integrations only, not spofs or gaps: spofs already has
+    _RESILIENCE_VOCAB doing the equivalent job for its own domain, and
+    gaps' correct shape (per CRITIC_SYSTEM_PROMPT) doesn't require this
+    specific vocabulary the way a "what's missing" field does.
+    """
+    flagged_fields: list[str] = []
+    items = parsed.get("missing_integrations") or []
+    if not items:
+        return flagged_fields
+
+    new_items = []
+    changed = False
+    for item in items:
+        if isinstance(item, str) and not _already_flagged(item):
+            low = item.lower()
+            if not any(v in low for v in _GAP_LANGUAGE_VOCAB):
+                new_items.append(f"{_MISSING_INTEGRATION_RESTATEMENT_FLAG_PREFIX}{item}")
+                changed = True
+                continue
+        new_items.append(item)
+    if changed:
+        parsed["missing_integrations"] = new_items
+        flagged_fields.append("missing_integrations")
+
+    return flagged_fields
+
+
 def summarize_components(components: list[Component]) -> str:
     """Compact bullet list of components for the prompt, staying inside the
     ~700 token Critic input budget (spec §4 Context Window Budget)."""
@@ -1004,10 +1085,19 @@ async def run_critic(
             f"Flagged inline (POSSIBLE DIAGRAM RELATIONSHIP ECHO)."
         )
 
-    if salvage_reason or dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields:
+    restatement_fields = _flag_missing_integrations_without_gap_language(parsed)
+    if restatement_fields:
+        print(
+            f"WARNING: Critic output for {restatement_fields} describes an "
+            f"existing integration without ever asserting it's missing/"
+            f"undocumented/unhandled -- restatement, not gap analysis. "
+            f"Flagged inline (POSSIBLE RESTATEMENT, NOT A GAP)."
+        )
+
+    if salvage_reason or dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields or restatement_fields:
         print(
             f"INFO: Critic output was salvaged (reason={salvage_reason}, "
-            f"guard_flags={dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields})."
+            f"guard_flags={dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields or restatement_fields})."
         )
 
     try:
