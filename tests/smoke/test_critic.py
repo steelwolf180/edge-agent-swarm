@@ -41,6 +41,7 @@ from agents.critic import (
     _flag_example_copying,
     _flag_example_domain_leak,
     _salvage_malformed_critic_output,
+    _flag_missing_integrations_without_gap_language
 )
 from schemas.adr import ADROutput
 from schemas.architect import ArchitectOutput, Component, DiagramProvenance
@@ -333,3 +334,83 @@ def test_salvage_malformed_critic_output_drops_unrecoverable_gap():
     assert result["missing_integrations"] == ["Some integration."]
 
     CriticOutput.model_validate(result)
+    
+
+def test_flag_missing_integrations_without_gap_language_catches_restatements():
+    """Confirms on workflow ae941ea4-... (26 Aug 2026): all three
+    missing_integrations entries were pure restatements of an existing
+    integration ('RAG System interacts with X to do Y'), never asserting
+    anything was missing/undocumented/unhandled. Two of three happened to
+    also trip _flag_diagram_relationship_echo() via Rel()-token overlap;
+    the third ('Git-hosted docs repo... versioned documentation') echoed
+    the Scribe diff's integration_points bullet instead of a Rel() edge
+    and went unflagged by that guard. This guard catches all three via a
+    different mechanism (absence of gap-indicating vocabulary), confirming
+    it targets the shared root symptom rather than patching one guard's
+    anchor set."""
+    parsed = {
+        "missing_integrations": [
+            "RAG System interacts with Confluence API to retrieve updated documentation",
+            "RAG System interacts with Git-hosted docs repo to pull versioned documentation",
+            "RAG System interacts with Hosted embedding model API to use pre-trained vector embeddings",
+        ]
+    }
+    flagged_fields = _flag_missing_integrations_without_gap_language(parsed)
+ 
+    assert flagged_fields == ["missing_integrations"]
+    for item in parsed["missing_integrations"]:
+        assert item.startswith("POSSIBLE RESTATEMENT, NOT A GAP -- FLAG FOR HUMAN REVIEW: ")
+ 
+ 
+def test_flag_missing_integrations_without_gap_language_no_false_positive_on_real_gaps():
+    """Legitimate missing_integrations entries -- ones that actually assert
+    something is absent/undocumented/unmodeled -- must pass through
+    unflagged. This is the control case for the false-positive class this
+    guard was deliberately designed to avoid (see the module-level
+    docstring on _GAP_LANGUAGE_VOCAB re: why overlap-with-source was
+    rejected in favor of this vocabulary-presence approach)."""
+    parsed = {
+        "missing_integrations": [
+            "Zendesk API is referenced in the spec for ticket escalation but is not shown as a System_Ext in the diagram",
+            "No explicit integration with the Admin Console is modeled despite the spec requiring docs-team review access",
+        ]
+    }
+    flagged_fields = _flag_missing_integrations_without_gap_language(parsed)
+ 
+    assert flagged_fields == []
+    assert parsed["missing_integrations"] == [
+        "Zendesk API is referenced in the spec for ticket escalation but is not shown as a System_Ext in the diagram",
+        "No explicit integration with the Admin Console is modeled despite the spec requiring docs-team review access",
+    ]
+ 
+def test_flag_missing_integrations_without_gap_language_idempotent():
+    """Running the guard twice must not double-prefix an already-flagged
+    entry -- same _already_flagged() contract every other guard in this
+    module follows."""
+    parsed = {
+        "missing_integrations": [
+            "RAG System interacts with Confluence API to retrieve updated documentation",
+        ]
+    }
+    _flag_missing_integrations_without_gap_language(parsed)
+    after_first_pass = list(parsed["missing_integrations"])
+ 
+    _flag_missing_integrations_without_gap_language(parsed)
+    after_second_pass = parsed["missing_integrations"]
+ 
+    assert after_first_pass == after_second_pass
+ 
+ 
+def test_flag_missing_integrations_without_gap_language_empty_field_noop():
+    """Empty/missing missing_integrations field should be a no-op, not an
+    error -- same contract as the other list-valued guards in this
+    module."""
+    parsed = {"missing_integrations": []}
+    flagged_fields = _flag_missing_integrations_without_gap_language(parsed)
+ 
+    assert flagged_fields == []
+    assert parsed["missing_integrations"] == []
+ 
+    parsed_missing_key = {}
+    flagged_fields2 = _flag_missing_integrations_without_gap_language(parsed_missing_key)
+    assert flagged_fields2 == []
