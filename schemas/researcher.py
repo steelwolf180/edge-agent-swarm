@@ -54,6 +54,17 @@ class ResearcherOutput(BaseModel):
         default=False,
         description="False if Infracost call failed/stubbed-out with no data",
     )
+    fallback_reason: str | None = Field(
+        default=None,
+        description=(
+            "Set when services_identified/pricing were shaped by the no-hosting "
+            "guard rather than a live tool call or a plain keyword scan, e.g. "
+            "'no_hosting_detected' (spec signals no cloud hosting, pricing "
+            "skipped) or 'model_called_infracost_despite_no_hosting_spec' "
+            "(model called the tool anyway -- flagged, not suppressed). "
+            "None on the normal tool-call or keyword-fallback paths."
+        ),
+    )
 
     def to_blackboard_payload(self) -> dict[str, Any]:
         """Shape written via DBOS.set_event('pricing_context', ...)."""
