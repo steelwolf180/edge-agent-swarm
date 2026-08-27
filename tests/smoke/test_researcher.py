@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from agents.researcher import (
     _extract_services_fallback,
+    _spec_signals_no_hosting,
     query_infracost,
     run_researcher,
     write_to_blackboard,
@@ -70,6 +71,55 @@ def test_extract_services_fallback_defaults_to_ec2_when_none_found():
     spec = "A system with no recognizable cloud services mentioned."
     found = _extract_services_fallback(spec)
     assert found == ["EC2"]
+
+
+# ---------------------------------------------------------------------------
+# Tier 1b: no-hosting guard tests. Motivated by a real fabrication caught
+# on openrouter_rag.json (workflow 6b0b7b10-7550-4409-bda2-6511b2b96fa6):
+# a spec explicitly stating no cloud hosting is required contains none of
+# the known service tokens, so _extract_services_fallback's
+# `found or ["EC2"]` default silently invented a $30/mo EC2 line item.
+# ---------------------------------------------------------------------------
+
+def test_spec_signals_no_hosting_detects_explicit_phrase():
+    spec = "Deployment: single-machine local script/CLI, no hosting required."
+    assert _spec_signals_no_hosting(spec) is True
+
+
+def test_spec_signals_no_hosting_detects_no_self_hosted_inference():
+    spec = "Budget: pay-per-use pricing via embedding API and OpenRouter; no self-hosted inference."
+    assert _spec_signals_no_hosting(spec) is True
+
+
+def test_spec_signals_no_hosting_false_when_absent():
+    spec = "A web app on EC2 with an RDS database and S3 storage."
+    assert _spec_signals_no_hosting(spec) is False
+
+
+def test_spec_signals_no_hosting_is_case_insensitive():
+    spec = "NO HOSTING REQUIRED for this deployment."
+    assert _spec_signals_no_hosting(spec) is True
+
+
+def test_spec_signals_no_hosting_on_real_openrouter_rag_fixture():
+    """Pins the failure that motivated this guard: openrouter_rag.json's
+    deployment_environment and budget_infra_limits fields both state no
+    cloud hosting is needed, but contain zero known-service tokens
+    (EC2/RDS/S3/...), so pre-guard _extract_services_fallback's
+    `found or ["EC2"]` fabricated a $30/mo EC2 line item (workflow
+    6b0b7b10-7550-4409-bda2-6511b2b96fa6)."""
+    spec_text = (
+        "Deployment: Single-machine local script/CLI, no hosting required; "
+        "only outbound calls are to the embedding API and OpenRouter. "
+        "Budget: Pay-per-use pricing via embedding API and OpenRouter; "
+        "no self-hosted inference."
+    )
+    assert _spec_signals_no_hosting(spec_text) is True
+    # Confirms the pre-guard assumption too: no known service token present,
+    # so the old code path really did fall through to the ["EC2"] default --
+    # this is *why* run_researcher must check the guard before calling
+    # _extract_services_fallback, not a claim that the fallback itself changed.
+    assert _extract_services_fallback(spec_text) == ["EC2"]
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +174,29 @@ def test_to_blackboard_payload_shape():
         "summary",
     }
     assert payload["pricing"][0]["service"] == "EC2"
+
+
+def test_researcher_output_accepts_fallback_reason():
+    output = ResearcherOutput(
+        services_identified=[],
+        pricing=[],
+        pricing_context={},
+        summary="No pricing lookup performed: spec indicates no cloud hosting is required.",
+        tool_call_succeeded=False,
+        fallback_reason="no_hosting_detected",
+    )
+    assert output.fallback_reason == "no_hosting_detected"
+
+
+def test_researcher_output_fallback_reason_defaults_none():
+    output = ResearcherOutput(
+        services_identified=["EC2"],
+        pricing=[PricingLineItem(service="EC2", monthly_cost_usd=30.0)],
+        pricing_context={"EC2": 30.0},
+        summary="One service, $30/mo.",
+        tool_call_succeeded=True,
+    )
+    assert output.fallback_reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +265,7 @@ def test_run_researcher_with_tool_call(monkeypatch):
     assert set(result.services_identified) == {"EC2", "S3"}
     assert "35" in result.summary or result.summary  # summary present
     assert result.pricing_context == {"EC2": 30.0, "S3": 5.0}
+    assert result.fallback_reason is None
 
 
 def test_run_researcher_without_tool_call_summary_includes_pricing(monkeypatch):
@@ -248,6 +322,74 @@ def test_run_researcher_handles_malformed_tool_arguments(monkeypatch):
 
     with pytest.raises(json.JSONDecodeError):
         run_researcher("A web app on EC2.")
+
+
+def test_run_researcher_no_hosting_spec_skips_infracost(monkeypatch):
+    """No-tool-call branch: spec says no hosting, Gemma also doesn't call
+    the tool -- services/pricing must come back empty, not defaulted to
+    EC2. Mirrors the real openrouter_rag.json failure shape."""
+
+    def fake_post(url, json=None, timeout=None):
+        if "tools" in (json or {}):
+            return _MockResponse(_gemma_response_without_tool_call())
+        return _MockResponse(_gemma_summary_response("No cloud hosting costs apply."))
+
+    monkeypatch.setattr("agents.researcher.httpx.post", fake_post)
+
+    result = run_researcher(
+        "Deployment: single-machine local script/CLI, no hosting required."
+    )
+
+    assert result.services_identified == []
+    assert result.pricing == []
+    assert result.pricing_context == {}
+    assert result.fallback_reason == "no_hosting_detected"
+    assert result.tool_call_succeeded is False
+
+
+def test_run_researcher_model_calls_infracost_despite_no_hosting_spec(monkeypatch):
+    """Tool-call branch: spec says no hosting, but Gemma calls
+    infracost_query anyway -- real pricing data still flows through (not
+    suppressed), but gets flagged with a distinct reason from the
+    fallback-guess case, since this is model hallucination rather than a
+    code-level default."""
+    calls = {"count": 0}
+
+    def fake_post(url, json=None, timeout=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _MockResponse(_gemma_response_with_tool_call())  # calls EC2, S3
+        return _MockResponse(_gemma_summary_response("Estimated $35/mo."))
+
+    monkeypatch.setattr("agents.researcher.httpx.post", fake_post)
+
+    result = run_researcher(
+        "Deployment: single-machine local script/CLI, no hosting required. "
+        "A web app on EC2 with S3 storage mentioned only as a comparison."
+    )
+
+    assert result.tool_call_succeeded is True
+    assert result.fallback_reason == "model_called_infracost_despite_no_hosting_spec"
+    assert result.pricing_context == {"EC2": 30.0, "S3": 5.0}  # not suppressed, just flagged
+
+
+def test_run_researcher_normal_path_unaffected_by_guard(monkeypatch):
+    """Regression check: a spec with no no-hosting signal and no known
+    service token still falls through to the old ['EC2'] default,
+    fallback_reason stays None -- confirms the guard is scoped to explicit
+    no-hosting language and doesn't change unrelated behavior."""
+
+    def fake_post(url, json=None, timeout=None):
+        if "tools" in (json or {}):
+            return _MockResponse(_gemma_response_without_tool_call())
+        return _MockResponse(_gemma_summary_response())
+
+    monkeypatch.setattr("agents.researcher.httpx.post", fake_post)
+
+    result = run_researcher("A system with no recognizable cloud services mentioned.")
+
+    assert result.services_identified == ["EC2"]
+    assert result.fallback_reason is None
 
 
 # ---------------------------------------------------------------------------
