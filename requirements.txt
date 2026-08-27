@@ -20,3 +20,10 @@ httpx
 arize-phoenix
 opentelemetry-api
 opentelemetry-sdk
+
+# --- Testing (tests/smoke/) ---
+# Versions pinned to what's confirmed installed in the swarm env (27 Aug 2026),
+# not estimated -- see pip freeze / conda install log.
+pytest==9.0.3
+pytest-asyncio==1.4.0
+pytest-mock==3.15.1
