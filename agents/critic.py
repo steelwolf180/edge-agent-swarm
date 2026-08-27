@@ -1436,11 +1436,23 @@ async def run_critic(
             f"invented, not restated. Flagged inline "
             f"(POSSIBLE FABRICATED COMPONENT)."
         )
-
-    if salvage_reason or dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields or restatement_fields or fabricated_fields:
+    
+    guard_results = {
+        "duplicate_list_items": dup_fields,
+        "near_duplicate_gaps": near_dup_gap_fields,
+        "cross_field_duplication": cross_field_fields,
+        "example_copying": copied_fields,
+        "example_domain_leak": leaked_fields,
+        "diagram_relationship_echo": echo_fields,
+        "missing_integration_restatement": restatement_fields,
+        "fabricated_component": fabricated_fields,
+    }
+    triggered_guards = {name: fields for name, fields in guard_results.items() if fields}
+    
+    if salvage_reason or triggered_guards:
         print(
             f"INFO: Critic output was salvaged (reason={salvage_reason}, "
-            f"guard_flags={dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields or restatement_fields or fabricated_fields})."
+            f"guard_flags={triggered_guards})."
         )
 
     # Bounded regeneration pass -- one attempt per duplicate-class flagged
