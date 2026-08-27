@@ -1,20 +1,29 @@
-# Agent Swarm at the Edge — conda env definition
-# Create with: conda env create -f environment.yml
-# Update existing env with: conda env update -n swarm -f environment.yml --prune
+# Agent Swarm at the Edge — swarm conda env (Python 3.11)
+# Generated for spec v0.7 / KICKOFF_CHECKLIST.md
+# Install with: pip install -r requirements.txt --break-system-packages
+# (or inside the activated `swarm` conda env, drop the --break-system-packages flag)
 
-name: swarm
-channels:
-  - conda-forge
-  - defaults
-dependencies:
-  - python=3.11
-  - pip
-  - pip:
-      - dbos
-      - psycopg[binary]
-      - pydantic>=2.0
-      - deepdiff
-      - httpx
-      - arize-phoenix
-      - opentelemetry-api
-      - opentelemetry-sdk
+# --- Orchestration / workflow ---
+dbos
+psycopg[binary]
+
+# --- Structured output / validation ---
+pydantic>=2.0
+
+# --- Diffing (ADR trigger detection) ---
+deepdiff
+
+# --- LLM client / tool calls (llama-server, mermaid.ink, Infracost) ---
+httpx
+
+# --- Observability ---
+arize-phoenix
+opentelemetry-api
+opentelemetry-sdk
+
+# --- Testing (tests/smoke/) ---
+# Versions pinned to what's confirmed installed in the swarm env (27 Aug 2026),
+# not estimated -- see pip freeze / conda install log.
+pytest==9.0.3
+pytest-asyncio==1.4.0
+pytest-mock==3.15.1
