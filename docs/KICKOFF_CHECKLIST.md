@@ -101,6 +101,46 @@ Don't wire the pipeline shell until each agent works standalone against its sche
 - [x] Output parses into `ResearcherOutput` Pydantic model
 - [x] Pricing context written to blackboard via `DBOS.set_event(...)` *(deferred: full round-trip pending §7 wiring)*
 
+**Researcher no-hosting guard (27 Aug 2026):**
+- [x] `_spec_signals_no_hosting()` + `fallback_reason` field added
+  (`agents/researcher.py` + `schemas/researcher.py`). Motivated by a real
+  fabrication on `openrouter_rag.json` (workflow `6b0b7b10-...`):
+  `_extract_services_fallback()`'s `found or ["EC2"]` default invented a
+  $30/mo EC2 line item against a spec explicitly stating "no hosting
+  required" / "no self-hosted inference". `tests/smoke/test_researcher.py`:
+  23/23 passing (17 pre-existing + 6 new, incl. a regression test pinning
+  the exact pre-guard fixture).
+- [x] **Live confirmation, standalone (no DBOS/Postgres):** ran
+  `python agents/researcher.py` against `tests/simulated/openrouter_rag.json`
+  (real Gemma call, not mocked). Guard fired correctly:
+  `fallback_reason="no_hosting_detected"`, `services_identified=[]`,
+  `pricing=[]`, `pricing_context={}`. Gemma's own summary also
+  independently grounded ("no traditional cloud infrastructure... no
+  direct cloud service costs"), consistent with the guard rather than
+  contradicting it as in the pre-guard `6b0b7b10-...` run's summary/data
+  mismatch.
+- [ ] **Not yet confirmed:** `fallback_reason=
+  "model_called_infracost_despite_no_hosting_spec"` branch — Gemma
+  correctly declined the tool call on the standalone run above, so this
+  branch remains mock-only-confirmed
+  (`test_run_researcher_model_calls_infracost_despite_no_hosting_spec`),
+  never observed on a real Gemma call. Not blocking (guard coverage
+  doesn't depend on this branch firing), logged per measured-not-estimated
+  discipline.
+- [ ] **In progress:** full `pipeline/run.py` rerun against
+  `openrouter_rag.json` to confirm the guard survives `@DBOS.step()`
+  wrapping and `fallback_reason` reaches the persisted/reviewable output
+  correctly. Standalone confirmation above only proves the guard fires
+  outside DBOS context.
+- [ ] Review-doc renderer (whatever builds the `.md` review file, e.g.
+  `6b0b7b10-...`-style output) doesn't currently show `fallback_reason`
+  inline — reviewer has no visibility into why pricing came back empty.
+  Not fixed, renderer not in context yet.
+- [ ] Judge's `cost_per_component` handling of an empty `pricing_context`
+  (the `no_hosting_detected` case) not yet addressed — will currently
+  score cost as $0 against whatever threshold logic applies, rather than
+  N/A. Separate agent, separate fix, not bundled here.
+
 **Architect (Gemma)**
 - [x] Reads prior accepted ADRs from `artifacts/v*/adr_*.md` (`ADRRecord`) and folds them into the prompt as `PRIOR_DECISIONS`; superseded/rejected ADRs correctly excluded
 - [x] C4Context output starts with `C4Context`
