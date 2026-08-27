@@ -41,7 +41,15 @@ from agents.critic import (
     _flag_example_copying,
     _flag_example_domain_leak,
     _salvage_malformed_critic_output,
-    _flag_missing_integrations_without_gap_language
+    _flag_missing_integrations_without_gap_language,
+    _flag_fabricated_component_references,
+    _attempt_regeneration_pass,
+    _regenerate_duplicate_entry,
+    _still_duplicate,
+    _strip_flag_prefix,
+    _DUPLICATE_FLAG_PREFIX,
+    _CROSS_FIELD_FLAG_PREFIX,
+    _EXAMPLE_COPY_FLAG_PREFIX,
 )
 from schemas.adr import ADROutput
 from schemas.architect import ArchitectOutput, Component, DiagramProvenance
@@ -414,3 +422,303 @@ def test_flag_missing_integrations_without_gap_language_empty_field_noop():
     parsed_missing_key = {}
     flagged_fields2 = _flag_missing_integrations_without_gap_language(parsed_missing_key)
     assert flagged_fields2 == []
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for the fabricated-component guard (26 Aug 2026)
+# ---------------------------------------------------------------------------
+# Regression fixture for workflow 3ae9e752-...: gaps/spofs/missing_
+# integrations all referenced a "notification_service" component that
+# does not exist anywhere -- not in the spec, not in architect_output.
+# components, not in the diagram. Pure function, no llama-server call
+# needed, same as the other guard unit tests above.
+
+WEAK_COMPONENTS = WEAK_ARCHITECT_OUTPUT.components  # [postgres]
+
+
+def test_flag_fabricated_component_references_catches_snake_and_title_case():
+    """Regression fixture for workflow 3ae9e752-...: the same fabricated
+    entity appeared as 'notification_service' (snake_case, in gaps/
+    missing_integrations) and 'Notification Service' (Title Case, in
+    spofs). Both forms must be caught and normalized-matched the same way."""
+    parsed = {
+        "gaps": [
+            {
+                "description": (
+                    "The diagram does not show the interaction between the "
+                    "user and the notification_service, nor does it indicate "
+                    "how the user's local data is accessed by the "
+                    "notification_service for sending notifications."
+                ),
+                "severity": "medium",
+                "related_component": "notification_service",
+            }
+        ],
+        "spofs": [
+            "Notification Service is a single service handling notification "
+            "tasks, but its role is not explicitly shown in the diagram.",
+        ],
+        "missing_integrations": [],
+    }
+
+    flagged_fields = _flag_fabricated_component_references(parsed, WEAK_COMPONENTS)
+
+    assert set(flagged_fields) == {"gaps", "spofs"}
+    assert parsed["gaps"][0]["description"].startswith(
+        "POSSIBLE FABRICATED COMPONENT (notification service not present in diagram) -- FLAG FOR HUMAN REVIEW: "
+    )
+    assert parsed["spofs"][0].startswith(
+        "POSSIBLE FABRICATED COMPONENT (notification service not present in diagram) -- FLAG FOR HUMAN REVIEW: "
+    )
+
+
+def test_flag_fabricated_component_references_no_false_positive_on_real_components():
+    """Legitimate entries referencing real components -- including ones
+    reworded from the component's id (snake_case) into prose -- must pass
+    through unflagged. Control case for the guard, same role as the
+    missing_integrations false-positive control above."""
+    parsed = {
+        "gaps": [
+            {
+                "description": "PostgreSQL is not shown handling concurrent writes from multiple agents.",
+                "severity": "low",
+                "related_component": "postgres",
+            }
+        ],
+        "spofs": [
+            "PostgreSQL is a single instance with no stated redundancy or failover.",
+        ],
+        "missing_integrations": [],
+    }
+
+    flagged_fields = _flag_fabricated_component_references(parsed, WEAK_COMPONENTS)
+
+    assert flagged_fields == []
+    assert parsed["gaps"][0]["description"] == (
+        "PostgreSQL is not shown handling concurrent writes from multiple agents."
+    )
+    assert parsed["spofs"][0] == (
+        "PostgreSQL is a single instance with no stated redundancy or failover."
+    )
+
+
+def test_flag_fabricated_component_references_idempotent():
+    """Running the guard twice must not double-prefix -- same
+    _already_flagged() contract every other guard in this module follows."""
+    parsed = {
+        "gaps": [],
+        "spofs": [
+            "Notification Service is a single point of failure not shown in the diagram.",
+        ],
+        "missing_integrations": [],
+    }
+    _flag_fabricated_component_references(parsed, WEAK_COMPONENTS)
+    after_first_pass = list(parsed["spofs"])
+
+    _flag_fabricated_component_references(parsed, WEAK_COMPONENTS)
+    after_second_pass = parsed["spofs"]
+
+    assert after_first_pass == after_second_pass
+
+
+def test_flag_fabricated_component_references_empty_fields_noop():
+    """Empty/missing fields should be a no-op, not an error."""
+    parsed = {"gaps": [], "spofs": [], "missing_integrations": []}
+    flagged_fields = _flag_fabricated_component_references(parsed, WEAK_COMPONENTS)
+    assert flagged_fields == []
+
+    parsed_missing_keys = {}
+    flagged_fields2 = _flag_fabricated_component_references(parsed_missing_keys, WEAK_COMPONENTS)
+    assert flagged_fields2 == []
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for bounded duplicate regeneration (26 Aug 2026)
+# ---------------------------------------------------------------------------
+# These mock httpx.AsyncClient rather than requiring a live llama-server --
+# unlike test_critic_flags_weak_spec() above, the point here is testing the
+# accept/reject logic around the call (still-duplicate check, NO_DISTINCT_
+# FINDING handling, scope restricted to duplicate-class prefixes), not LFM's
+# actual output quality. A real run against openrouter_rag.json or similar
+# is still the right way to confirm 0.15 produces genuinely distinct output
+# in practice -- these tests only confirm the mechanism behaves correctly
+# given a known model response.
+
+
+def _mock_llm_client(mocker, content: str, finish_reason: str = "stop", status_code: int = 200):
+    """Builds a mock matching the `async with httpx.AsyncClient(...) as client:
+    response = await client.post(...)` shape used by _regenerate_duplicate_entry.
+    Returns (context_manager, client) -- the client is returned separately
+    so tests can inspect client.post.call_args to assert on what was
+    actually sent, not just what came back.
+
+    Uses mocker.MagicMock/mocker.AsyncMock rather than importing from
+    unittest.mock directly -- pytest-mock's mocker fixture exposes these
+    as the same underlying classes, so no separate import is needed in a
+    pytest-mock-based suite."""
+    mock_response = mocker.MagicMock()
+    mock_response.status_code = status_code
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": content}, "finish_reason": finish_reason}]
+    }
+
+    mock_client = mocker.MagicMock()
+    mock_client.post = mocker.AsyncMock(return_value=mock_response)
+
+    mock_client_cm = mocker.MagicMock()
+    mock_client_cm.__aenter__ = mocker.AsyncMock(return_value=mock_client)
+    mock_client_cm.__aexit__ = mocker.AsyncMock(return_value=False)
+
+    return mock_client_cm, mock_client
+
+
+@pytest.mark.asyncio
+async def test_regenerate_duplicate_entry_accepts_genuinely_distinct_candidate(mocker):
+    """A regeneration call that returns a candidate sharing no real overlap
+    with the sibling entries should be accepted -- returns the clean new
+    text (caller is responsible for the flag-prefix already having been
+    stripped before display). Also confirms the actual payload sent used
+    the corrective-context prompt (siblings included, flagged text with
+    its review-facing prefix stripped, temperature=0.15) rather than just
+    asserting some call happened."""
+    flagged = f"{_DUPLICATE_FLAG_PREFIX}RAG System interacts with several external document sources and APIs."
+    siblings = [
+        "RAG System interacts with the LLM API for generating grounded answers.",
+    ]
+    mock_cm, mock_client = _mock_llm_client(
+        mocker,
+        "The Vector Store has no described backup or snapshot strategy, risking permanent data loss on failure."
+    )
+    mocker.patch("agents.critic.httpx.AsyncClient", return_value=mock_cm)
+
+    result = await _regenerate_duplicate_entry("spofs", flagged, siblings, WEAK_ARCHITECT_OUTPUT)
+
+    assert result == (
+        "The Vector Store has no described backup or snapshot strategy, "
+        "risking permanent data loss on failure."
+    )
+
+    mock_client.post.assert_called_once()
+    _, kwargs = mock_client.post.call_args
+    payload = kwargs["json"]
+    assert payload["temperature"] == 0.15
+
+    prompt_text = payload["messages"][-1]["content"]
+    # flagged text sent with its review-facing prefix stripped, not raw
+    assert "RAG System interacts with several external document sources and APIs." in prompt_text
+    assert _DUPLICATE_FLAG_PREFIX not in prompt_text
+    # sibling entries included as "already covered" corrective context
+    assert siblings[0] in prompt_text
+    # diagram context included, confirming this isn't a resend of the
+    # original critique prompt but a distinct, corrective one
+    assert WEAK_ARCHITECT_OUTPUT.context_diagram in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_regenerate_duplicate_entry_rejects_still_duplicate_candidate(mocker):
+    """A regeneration call that returns something still near-identical to a
+    sibling must be rejected (returns None), so the caller falls back to
+    the existing FLAG-FOR-REVIEW text rather than silently swapping one
+    duplicate for another."""
+    flagged = f"{_DUPLICATE_FLAG_PREFIX}RAG System interacts with several external document sources and APIs."
+    siblings = [
+        "RAG System interacts with the LLM API for generating grounded answers.",
+    ]
+    # Near-verbatim restatement of the sibling -- should score above the
+    # 0.75 still-duplicate threshold.
+    mock_cm, _ = _mock_llm_client(
+        mocker,
+        "RAG System interacts with the LLM API to generate grounded answers."
+    )
+    mocker.patch("agents.critic.httpx.AsyncClient", return_value=mock_cm)
+
+    result = await _regenerate_duplicate_entry("spofs", flagged, siblings, WEAK_ARCHITECT_OUTPUT)
+
+    assert result is None
+
+
+
+@pytest.mark.asyncio
+async def test_regenerate_duplicate_entry_handles_no_distinct_finding(mocker):
+    """Model explicitly declining (NO_DISTINCT_FINDING) must fall back to
+    None, not be treated as literal replacement text."""
+    flagged = f"{_CROSS_FIELD_FLAG_PREFIX}Some duplicated finding."
+    mock_cm, _ = _mock_llm_client(mocker, "NO_DISTINCT_FINDING")
+    mocker.patch("agents.critic.httpx.AsyncClient", return_value=mock_cm)
+
+    result = await _regenerate_duplicate_entry("gaps", flagged, [], WEAK_ARCHITECT_OUTPUT)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_regenerate_duplicate_entry_handles_truncation_and_http_error(mocker):
+    """finish_reason == 'length' and a non-2xx status must both fall back
+    to None rather than raising -- a failed regeneration attempt should
+    never take down the rest of the guard pass."""
+    truncated_cm, _ = _mock_llm_client(mocker, "The Vector Store has no", finish_reason="length")
+    mocker.patch("agents.critic.httpx.AsyncClient", return_value=truncated_cm)
+    result = await _regenerate_duplicate_entry("spofs", "flagged text", [], WEAK_ARCHITECT_OUTPUT)
+    assert result is None
+
+    error_cm, _ = _mock_llm_client(mocker, "", status_code=500)
+    mocker.patch("agents.critic.httpx.AsyncClient", return_value=error_cm)
+    result2 = await _regenerate_duplicate_entry("spofs", "flagged text", [], WEAK_ARCHITECT_OUTPUT)
+    assert result2 is None
+
+
+@pytest.mark.asyncio
+async def test_attempt_regeneration_pass_only_touches_duplicate_class_flags(mocker):
+    """Scope check: entries flagged by non-duplicate-class guards (example-
+    copy, domain-leak, echo, restatement, fabricated-component) must be
+    left completely untouched by the regeneration pass, even if a
+    duplicate-class entry elsewhere in the same output triggers a real
+    regeneration call. Confirms the pass doesn't over-reach into failure
+    classes it hasn't been validated against."""
+    parsed = {
+        "gaps": [],
+        "spofs": [
+            f"{_DUPLICATE_FLAG_PREFIX}RAG System interacts with several external document sources and APIs.",
+            f"{_DUPLICATE_FLAG_PREFIX}RAG System interacts with several external document sources and APIs.",
+        ],
+        "missing_integrations": [
+            f"{_EXAMPLE_COPY_FLAG_PREFIX}OrderService is a single instance handling both critical paths with no stated redundancy.",
+        ],
+    }
+    mock_cm, _ = _mock_llm_client(
+        mocker,
+        "The Embedding API has no documented rate-limit handling, risking silent ingestion failures under burst load."
+    )
+    mocker.patch("agents.critic.httpx.AsyncClient", return_value=mock_cm)
+
+    regenerated = await _attempt_regeneration_pass(parsed, WEAK_ARCHITECT_OUTPUT)
+
+    # The example-copy-flagged missing_integrations entry must be untouched.
+    assert parsed["missing_integrations"][0].startswith(_EXAMPLE_COPY_FLAG_PREFIX)
+    # At least one of the duplicate-class spofs entries should have been
+    # attempted (mocked to succeed identically each call, so both could
+    # regenerate to the same text -- that's a known limitation of mocking
+    # a single fixed response, not something this test needs to resolve).
+    assert regenerated, "expected at least one duplicate-class entry to be regenerated"
+    assert all(r.startswith("spofs[") for r in regenerated)
+
+
+def test_still_duplicate_and_strip_flag_prefix_helpers():
+    """Direct unit coverage for the two small helpers the regeneration
+    machinery depends on, since a bug in either would silently corrupt
+    every regeneration decision above it."""
+    assert _strip_flag_prefix(
+        f"{_DUPLICATE_FLAG_PREFIX}Some original text."
+    ) == "Some original text."
+    assert _strip_flag_prefix("No prefix here.") == "No prefix here."
+
+    assert _still_duplicate("", ["anything"]) is True
+    assert _still_duplicate("short", ["anything"]) is True  # under length floor
+    assert _still_duplicate(
+        "RAG System interacts with the LLM API for generating grounded answers.",
+        ["RAG System interacts with the LLM API for generating grounded answers."],
+    ) is True
+    assert _still_duplicate(
+        "The Vector Store has no described backup or snapshot strategy.",
+        ["RAG System interacts with the LLM API for generating grounded answers."],
+    ) is False
