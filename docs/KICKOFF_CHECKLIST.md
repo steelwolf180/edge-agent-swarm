@@ -127,19 +127,26 @@ Don't wire the pipeline shell until each agent works standalone against its sche
   never observed on a real Gemma call. Not blocking (guard coverage
   doesn't depend on this branch firing), logged per measured-not-estimated
   discipline.
-- [ ] **In progress:** full `pipeline/run.py` rerun against
-  `openrouter_rag.json` to confirm the guard survives `@DBOS.step()`
-  wrapping and `fallback_reason` reaches the persisted/reviewable output
-  correctly. Standalone confirmation above only proves the guard fires
-  outside DBOS context.
-- [ ] Review-doc renderer (whatever builds the `.md` review file, e.g.
-  `6b0b7b10-...`-style output) doesn't currently show `fallback_reason`
-  inline — reviewer has no visibility into why pricing came back empty.
-  Not fixed, renderer not in context yet.
-- [ ] Judge's `cost_per_component` handling of an empty `pricing_context`
-  (the `no_hosting_detected` case) not yet addressed — will currently
-  score cost as $0 against whatever threshold logic applies, rather than
-  N/A. Separate agent, separate fix, not bundled here.
+- [x] **Full pipeline confirmation (27 Aug 2026, workflow
+  `52dc5e24-795b-40fb-8fa7-1572c98ce8a6`, `openrouter_rag.json`):** guard
+  survives `@DBOS.step()` wrapping. Review doc shows `Services identified:`
+  empty, pricing table empty, Researcher summary correctly grounded ("no
+  requirement for cloud infrastructure hosting... no associated cloud
+  service costs"). No EC2 fabrication, no `6b0b7b10-...`-style summary/data
+  mismatch. Thermal guard fired 4x (63.0/62.0/61.0/60.0°C), each recovered
+  within poll window; total run ~9 min, no retries, no errors — pipeline
+  mechanics held cleanly end-to-end on this spec.
+- [ ] Review-doc renderer still doesn't surface `fallback_reason` inline —
+  confirmed on the real `52dc5e24-...` doc, not just inferred. A reviewer
+  reading the doc sees empty pricing with no stated reason why. Not fixed,
+  renderer not in context yet.
+- [x] **Judge `cost_per_component` on an empty `pricing_context` —
+  confirmed non-issue, no fix needed.** `52dc5e24-...`'s Judge output:
+  `cost_per_component = 0.0`, `flagged = False` (threshold 5.0,
+  `lower_is_better` — $0 simply doesn't trip a lower-is-better flag).
+  Original concern (this scoring as a false-flag) didn't materialize in
+  practice. Leaving as-is; revisit only if a future spec's semantics make
+  "$0" misleading rather than accurate.
 
 **Architect (Gemma)**
 - [x] Reads prior accepted ADRs from `artifacts/v*/adr_*.md` (`ADRRecord`) and folds them into the prompt as `PRIOR_DECISIONS`; superseded/rejected ADRs correctly excluded
@@ -1365,9 +1372,11 @@ finishes, nothing extra to run before `send_approval.py`).
 
 ## 9. Paper Trail
 
-**Status:** Unblocked, started 19 Aug 2026. Review-doc generation now
-automated as of §7.2 (26 Aug 2026) — no manual render step needed before
-approving.
+**Status:** First approved run landed 27 Aug 2026 (workflow
+`52dc5e24-795b-40fb-8fa7-1572c98ce8a6`, `openrouter_rag.json`). Remaining:
+confirm the DB/file write, then commit + confirm Mermaid rendering on
+GitLab. Review-doc generation automated as of §7.2 (26 Aug 2026) — no
+manual render step needed before approving.
 
 - [x] Verify `revision_cycles` rows exist for today's six rejected
   `cloud_rag.json` workflows (`b67bea1a`, `34876593`, `166ad426`,
@@ -1394,10 +1403,45 @@ approving.
   unrecoverable — acceptable since the runs were rejected and never
   meant to persist, but flags that the Observability Checks section
   below isn't just deferred, it's genuinely unimplemented.
-- [ ] Produce a real approved run (any spec, not necessarily
+- [x] Produce a real approved run (any spec, not necessarily
   `cloud_rag.json`) to generate `artifacts/v1/*.md` content —
   `cloud_rag.json` stays on record 6-for-6 rejected, not pursued
   toward a 7th attempt.
+
+  **Approved (27 Aug 2026), workflow `52dc5e24-795b-40fb-8fa7-1572c98ce8a6`,
+  `openrouter_rag.json`.** First approved run — closes this item. Notable
+  vs. the earlier `6b0b7b10-...` run on the same spec: no Researcher EC2
+  fabrication (no-hosting guard confirmed live, see §6 above), no Scribe
+  `POSSIBLE FABRICATION` flag. One known, accepted issue on record: Critic
+  `gaps[0]`/`missing_integrations[0]` share a verbatim tail clause —
+  paraphrase-level cross-field duplication, matches the P2 known
+  limitation already logged under §8.1 ("not scheduled"), not a new bug.
+  Also noted, not investigated further: the shared suggestion content
+  (Markdown Notes "orchestrating" API calls) is architecturally
+  incoherent — new pattern to watch, no guard covers content coherence.
+  Judge's other flags (`spof_count`, `redundancy_ratio`,
+  `integration_coverage`, `adrs_per_diff`) are correct behavior for a
+  genuinely single-instance CLI spec, not defects.
+- [x] Confirm `adr_id` assignment, Postgres `artifacts` row, and
+  `artifacts/v1/adr_<NNNN>.md` file write succeeded for this workflow.
+  **Confirmed (27 Aug 2026), queried directly in psql:**
+  - `artifacts` row exists: `id=12`, `adr_id='adr_0001'`, correctly linked
+    to `workflow_id='52dc5e24-795b-40fb-8fa7-1572c98ce8a6'`.
+  - `pipeline_runs.status = 'approved'` for the same workflow.
+  - `revision_cycles` has zero rows for this workflow — confirms the
+    rejection path did not fire.
+  - File (`adr_0001.md`) checked directly: clean frontmatter, no
+    bracket-leading `diff_summary` (the specific §8.1 14 Aug failure
+    mode), `supersedes`/`affected_diagrams` correctly list-formatted,
+    `created` timestamp correctly serialized (confirms the `mode="json"`
+    §7 fix holds), `Decision`/`Consequences` content matches the approved
+    review doc verbatim.
+  - Not yet checked: exact `judge_scores` JSONB contents in Postgres —
+    `artifacts` table's real column list wasn't confirmed this session
+    (initial `spec_version` column guess was wrong per psql's own hint,
+    likely `spec_version_id` or similar). Low priority, file + status +
+    artifacts-row checks already give enough confidence; revisit with
+    `\d artifacts` if ever needed.
 - [ ] Commit `artifacts/v1/*.md` to GitLab
 - [ ] Confirm GitLab renders `context_diagram.md` (C4Context block) inline
 
