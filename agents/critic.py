@@ -718,6 +718,154 @@ def _flag_missing_integrations_without_gap_language(parsed: dict) -> list[str]:
     return flagged_fields
 
 
+# --- Fabricated component reference (26 Aug 2026) ----------------------
+#
+# Confirmed live on workflow 3ae9e752-...: gaps/spofs/missing_integrations
+# all referenced a "notification_service" component that does not exist
+# anywhere -- not in the spec, not in architect_output.components, not in
+# the diagram. Distinct failure class from every guard above: those all
+# check for *copying* or *duplication* of real content; this checks for
+# outright invention of an entity that was never real to begin with. The
+# existing cross-field duplication guard correctly flagged the spofs/
+# missing_integrations copies of it as duplicates of the gaps entry, but
+# that's incidental -- it flagged them for being duplicates of each other,
+# not for referencing something fabricated. The gaps entry itself, being
+# the only occurrence, went through both duplicate guards unflagged.
+#
+# Flag-only, same as every other guard's first landing here (P0, P2, P5
+# all started detection-only before any behavior-level fix was
+# attempted) -- not bundling a "fix the model" attempt with this guard's
+# first landing.
+_ENTITY_STOPWORDS = {"the", "and", "or", "for", "with", "via", "of", "to", "a", "an"}
+_SNAKE_CASE_ENTITY_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+_TITLE_CASE_ENTITY_RE = re.compile(
+    r"\b(?:[A-Z][a-zA-Z0-9]*\s){0,3}"
+    r"(?:Service|API|Store|Handler|Console|Widget|Sidebar|System|Database|DB)\b"
+)
+_FABRICATED_COMPONENT_ENTITY_OVERLAP_THRESHOLD = 0.5
+_FABRICATED_COMPONENT_FLAG_PREFIX_TEMPLATE = (
+    "POSSIBLE FABRICATED COMPONENT ({entities} not present in diagram) "
+    "-- FLAG FOR HUMAN REVIEW: "
+)
+
+
+def _normalize_entity(text: str) -> str:
+    """snake_case or Title Case -> space-joined lowercase tokens, stopwords
+    dropped. 'Notification Service' and 'notification_service' both
+    normalize to 'notification service', matching real component id/name
+    regardless of which casing style the model reaches for."""
+    text = text.replace("_", " ")
+    tokens = re.findall(r"[a-zA-Z0-9]+", text.lower())
+    return " ".join(t for t in tokens if t not in _ENTITY_STOPWORDS)
+
+
+def _extract_entity_mentions(text: str) -> set[str]:
+    mentions = set()
+    for m in _SNAKE_CASE_ENTITY_RE.findall(text):
+        mentions.add(_normalize_entity(m))
+    for m in _TITLE_CASE_ENTITY_RE.findall(text):
+        norm = _normalize_entity(m)
+        if norm:
+            mentions.add(norm)
+    return {m for m in mentions if m}
+
+
+def _flag_fabricated_component_references(parsed: dict, components: list[Component]) -> list[str]:
+    """Flags AND mutates gaps/spofs/missing_integrations entries that
+    reference a component-like entity absent from architect_output.
+    components -- confirmed motivating case above (workflow 3ae9e752-...,
+    a hallucinated 'notification_service'/'Notification Service').
+
+    Bag-of-words token overlap against real component id/name, same
+    0.50-threshold pattern as _flag_diagram_relationship_echo's Rel-anchor
+    check, so 'notification service' still correctly matches a real id
+    like 'vector_store' if the model reworded it, while not matching a
+    genuinely absent entity at all.
+    """
+    real_entities = set()
+    for c in components:
+        real_entities.add(_normalize_entity(c.id))
+        real_entities.add(_normalize_entity(c.name))
+    real_entities.discard("")
+    real_token_sets = [set(r.split()) for r in real_entities if r]
+
+    def matches(text: str) -> bool:
+        mentioned = _extract_entity_mentions(text)
+        fabricated = set()
+        for m in mentioned:
+            if m in real_entities:
+                continue
+            m_tokens = set(m.split())
+            if not any(
+                len(m_tokens & r_tokens) / max(len(m_tokens), 1) >= _FABRICATED_COMPONENT_ENTITY_OVERLAP_THRESHOLD
+                for r_tokens in real_token_sets
+            ):
+                fabricated.add(m)
+        # Stash on the closure via a mutable default arg trick is fragile;
+        # instead re-derive fabricated set at flag-time below.
+        return bool(fabricated)
+
+    # _flag_list_and_gap_items only takes a boolean matches() predicate and
+    # a single fixed prefix, but this guard's prefix needs to name which
+    # entity was fabricated per-entry -- so flag manually here rather than
+    # reusing that helper, unlike every other guard in this file.
+    flagged_fields: list[str] = []
+
+    def fabricated_entities_for(text: str) -> set[str]:
+        mentioned = _extract_entity_mentions(text)
+        fabricated = set()
+        for m in mentioned:
+            if m in real_entities:
+                continue
+            m_tokens = set(m.split())
+            if not any(
+                len(m_tokens & r_tokens) / max(len(m_tokens), 1) >= _FABRICATED_COMPONENT_ENTITY_OVERLAP_THRESHOLD
+                for r_tokens in real_token_sets
+            ):
+                fabricated.add(m)
+        return fabricated
+
+    for field in ("spofs", "missing_integrations"):
+        items = parsed.get(field) or []
+        if not items:
+            continue
+        new_items = []
+        changed = False
+        for item in items:
+            if isinstance(item, str) and not _already_flagged(item):
+                fabricated = fabricated_entities_for(item)
+                if fabricated:
+                    prefix = _FABRICATED_COMPONENT_FLAG_PREFIX_TEMPLATE.format(
+                        entities=", ".join(sorted(fabricated))
+                    )
+                    new_items.append(f"{prefix}{item}")
+                    changed = True
+                    continue
+            new_items.append(item)
+        parsed[field] = new_items
+        if changed:
+            flagged_fields.append(field)
+
+    gaps = parsed.get("gaps") or []
+    gaps_changed = False
+    for g in gaps:
+        if not isinstance(g, dict):
+            continue
+        desc = g.get("description", "")
+        if isinstance(desc, str) and not _already_flagged(desc):
+            fabricated = fabricated_entities_for(desc)
+            if fabricated:
+                prefix = _FABRICATED_COMPONENT_FLAG_PREFIX_TEMPLATE.format(
+                    entities=", ".join(sorted(fabricated))
+                )
+                g["description"] = f"{prefix}{desc}"
+                gaps_changed = True
+    if gaps_changed:
+        flagged_fields.append("gaps")
+
+    return flagged_fields
+
+
 def summarize_components(components: list[Component]) -> str:
     """Compact bullet list of components for the prompt, staying inside the
     ~700 token Critic input budget (spec §4 Context Window Budget)."""
@@ -955,6 +1103,192 @@ def _salvage_malformed_critic_output(raw: str) -> dict:
     return {"gaps": gaps, "spofs": spofs, "missing_integrations": missing_integrations}
 
 
+# --- Bounded regeneration for duplicate-class flags (26 Aug 2026) ------
+#
+# Different mechanism from every guard above: not a new detector, a single
+# bounded regeneration attempt for entries the duplicate-class guards
+# (_flag_duplicate_list_items, _flag_near_duplicate_gaps,
+# _flag_cross_field_duplication) already flagged. Explicitly NOT the same
+# as the temp=0.05 blind-retry pattern already ruled out elsewhere in this
+# pipeline (Scribe's decision/consequences copying) -- those retries
+# reused the identical prompt and reliably reproduced the identical
+# failure. This instead feeds the flagged text + every other entry
+# currently in the output back in as corrective context ("here's what you
+# wrote, here's what's already covered, write something distinct"), which
+# is a materially different prompt, not a resample of the same one.
+#
+# Scoped to the three duplicate-class guards only -- NOT example-copy,
+# domain-leak, diagram-echo, restatement-without-gap-language, or
+# fabricated-component flags. Those are different failure shapes
+# (copying, restating, inventing) where "write something different" isn't
+# obviously the right corrective instruction the way it is for genuine
+# duplication; extending regeneration to them is a separate, unvalidated
+# decision, not bundled into this landing.
+#
+# Capped at one attempt per flagged entry, no loop. On any failure (still
+# duplicate against ANY other entry in the output, model declines via
+# NO_DISTINCT_FINDING, empty/degenerate response, or the call itself
+# fails) it falls back to the existing FLAG-FOR-REVIEW text untouched --
+# never leaves an entry in a worse or unverified state than before.
+
+_DUPLICATE_CLASS_PREFIXES = (
+    _DUPLICATE_FLAG_PREFIX,
+    _NEAR_DUP_GAP_FLAG_PREFIX,
+    _CROSS_FIELD_FLAG_PREFIX,
+)
+_REGEN_STILL_DUPLICATE_THRESHOLD = 0.75  # same threshold as _GAP_NEAR_DUP_THRESHOLD
+
+
+def _strip_flag_prefix(text: str) -> str:
+    """Removes this module's flag prefix + 'FLAG FOR HUMAN REVIEW: '
+    marker, returning the model's original text underneath. Used before
+    feeding a flagged entry into a regeneration prompt -- the model should
+    see its own original wording, not review-facing prefix text."""
+    if "FLAG FOR HUMAN REVIEW: " in text:
+        return text.split("FLAG FOR HUMAN REVIEW: ", 1)[1]
+    return text
+
+
+def _all_entry_texts(parsed: dict) -> list[str]:
+    """Every current gaps/spofs/missing_integrations text, flag prefixes
+    and all -- used as the 'already covered' set so a regenerated entry
+    can't reintroduce a duplicate of a DIFFERENT already-flagged entry."""
+    texts = []
+    for field in ("spofs", "missing_integrations"):
+        texts.extend(t for t in (parsed.get(field) or []) if isinstance(t, str))
+    for g in parsed.get("gaps") or []:
+        if isinstance(g, dict) and isinstance(g.get("description"), str):
+            texts.append(g["description"])
+    return texts
+
+
+def _still_duplicate(candidate: str, other_texts: list[str]) -> bool:
+    """Re-checked against every other entry currently in the output, not
+    just the same field -- a regenerated spofs entry that now duplicates a
+    gaps entry is still a failure, just of the cross-field kind instead of
+    the within-field kind it started as."""
+    if not candidate or len(candidate.strip()) < 10:
+        return True
+    low = candidate.strip().lower()
+    for other in other_texts:
+        other_clean = _strip_flag_prefix(other).strip().lower()
+        if not other_clean:
+            continue
+        if low == other_clean or low in other_clean or other_clean in low:
+            return True
+        if SequenceMatcher(None, low, other_clean).ratio() >= _REGEN_STILL_DUPLICATE_THRESHOLD:
+            return True
+    return False
+
+
+def _build_regeneration_prompt(
+    field_name: str, flagged_text: str, other_texts: list[str], architect_output: ArchitectOutput
+) -> str:
+    siblings_rendered = "\n".join(f"- {_strip_flag_prefix(t)}" for t in other_texts) or "(none)"
+    return (
+        f"You previously wrote this {field_name} entry, but it duplicates or "
+        f"overlaps with other analysis already recorded for this diagram:\n\n"
+        f'  "{flagged_text}"\n\n'
+        f"Entries already covered (do NOT repeat any of these, in wording or meaning):\n"
+        f"{siblings_rendered}\n\n"
+        f"C4 diagram context:\n{architect_output.context_diagram}\n\n"
+        f"Write ONE new, distinct {field_name} entry that identifies a genuinely "
+        f"different issue not already covered above. If you cannot identify a "
+        f"distinct issue, respond with exactly: NO_DISTINCT_FINDING\n\n"
+        f"Respond with only the entry text, one sentence, no preamble, no numbering."
+    )
+
+
+async def _regenerate_duplicate_entry(
+    field_name: str,
+    flagged_text: str,
+    other_texts: list[str],
+    architect_output: ArchitectOutput,
+) -> str | None:
+    """One bounded regeneration attempt. Returns new text on success, or
+    None if the caller should keep the existing FLAG-FOR-REVIEW text as-is.
+
+    temperature=0.15, not the 0.2-0.3 range considered initially -- the
+    corrective prompt content (flagged text + full sibling list) is
+    expected to do most of the work toward distinctness, and this model
+    degrades unpredictably at higher temperatures elsewhere in this
+    pipeline. Bump only if a real run shows 0.15 still reproducing
+    near-duplicates -- one variable at a time, not estimated upfront.
+    """
+    original_text = _strip_flag_prefix(flagged_text)
+    prompt = _build_regeneration_prompt(field_name, original_text, other_texts, architect_output)
+    payload = {
+        "model": LFM_MODEL_NAME,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are the Critic agent in an architecture review pipeline, "
+                    "asked to replace one flagged duplicate finding with a distinct one."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.15,
+        "max_tokens": 200,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=CRITIC_HTTP_TIMEOUT_S) as client:
+            response = await client.post(LLAMA_SERVER_URL, json=payload)
+        if response.status_code >= 400:
+            return None
+        choice = response.json()["choices"][0]
+        if choice.get("finish_reason") == "length":
+            return None
+        candidate = choice["message"]["content"].strip().strip('"')
+    except Exception:
+        return None
+
+    if not candidate or candidate.upper().startswith("NO_DISTINCT_FINDING"):
+        return None
+    if _still_duplicate(candidate, other_texts):
+        return None
+    return candidate
+
+
+async def _attempt_regeneration_pass(parsed: dict, architect_output: ArchitectOutput) -> list[str]:
+    """Runs one bounded regeneration attempt for every entry currently
+    flagged by the duplicate-class guards. Successful regenerations
+    replace the flagged text with the clean new text (no flag prefix --
+    it's a verified-distinct finding, not something still needing
+    review). Failures leave the existing FLAG-FOR-REVIEW text untouched.
+    Returns "field[index]" identifiers for every entry regenerated, for
+    logging.
+    """
+    regenerated: list[str] = []
+
+    for field in ("spofs", "missing_integrations"):
+        items = parsed.get(field) or []
+        for i, item in enumerate(items):
+            if not isinstance(item, str) or not item.startswith(_DUPLICATE_CLASS_PREFIXES):
+                continue
+            other_texts = [t for t in _all_entry_texts(parsed) if t != item]
+            new_text = await _regenerate_duplicate_entry(field, item, other_texts, architect_output)
+            if new_text is not None:
+                items[i] = new_text
+                regenerated.append(f"{field}[{i}]")
+
+    gaps = parsed.get("gaps") or []
+    for i, g in enumerate(gaps):
+        if not isinstance(g, dict):
+            continue
+        desc = g.get("description", "")
+        if not isinstance(desc, str) or not desc.startswith(_DUPLICATE_CLASS_PREFIXES):
+            continue
+        other_texts = [t for t in _all_entry_texts(parsed) if t != desc]
+        new_text = await _regenerate_duplicate_entry("gaps", desc, other_texts, architect_output)
+        if new_text is not None:
+            g["description"] = new_text
+            regenerated.append(f"gaps[{i}]")
+
+    return regenerated
+
+
 async def run_critic(
     architect_output: ArchitectOutput,
     adr_output: ADROutput,
@@ -1094,11 +1428,35 @@ async def run_critic(
             f"Flagged inline (POSSIBLE RESTATEMENT, NOT A GAP)."
         )
 
-    if salvage_reason or dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields or restatement_fields:
+    fabricated_fields = _flag_fabricated_component_references(parsed, architect_output.components)
+    if fabricated_fields:
+        print(
+            f"WARNING: Critic output for {fabricated_fields} references a "
+            f"component not present in architect_output.components -- "
+            f"invented, not restated. Flagged inline "
+            f"(POSSIBLE FABRICATED COMPONENT)."
+        )
+
+    if salvage_reason or dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields or restatement_fields or fabricated_fields:
         print(
             f"INFO: Critic output was salvaged (reason={salvage_reason}, "
-            f"guard_flags={dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields or restatement_fields})."
+            f"guard_flags={dup_fields or near_dup_gap_fields or cross_field_fields or copied_fields or leaked_fields or echo_fields or restatement_fields or fabricated_fields})."
         )
+
+    # Bounded regeneration pass -- one attempt per duplicate-class flagged
+    # entry (dup_fields / near_dup_gap_fields / cross_field_fields only,
+    # not fabricated_fields or the copy/leak/echo/restatement guards; see
+    # module note above _attempt_regeneration_pass). Runs after every
+    # guard above so it sees the full, final flagged state of `parsed`.
+    if dup_fields or near_dup_gap_fields or cross_field_fields:
+        regenerated = await _attempt_regeneration_pass(parsed, architect_output)
+        if regenerated:
+            print(
+                f"INFO: Critic regenerated {len(regenerated)} duplicate-"
+                f"flagged entr{'y' if len(regenerated) == 1 else 'ies'} "
+                f"after one bounded attempt each (temperature=0.15): "
+                f"{regenerated}."
+            )
 
     try:
         validated = CriticOutput.model_validate(parsed)
