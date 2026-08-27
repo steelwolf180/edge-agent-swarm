@@ -15,7 +15,6 @@ the stub. Set INFRACOST_LIVE=1 to hit the real GraphQL endpoint.
 """
 from __future__ import annotations
 
-
 import json
 import os
 import re
@@ -70,7 +69,6 @@ _STUB_PRICES = {
     "CLOUDFRONT": 8.0,
 }
 
-
 def query_infracost(services: list[str], provider: str = "aws") -> dict:
     """
     Infracost GraphQL tool call. Stub by default (checklist §6 gate:
@@ -113,13 +111,29 @@ def query_infracost(services: list[str], provider: str = "aws") -> dict:
         ],
     }
 
+_NO_HOSTING_SIGNALS = (
+    "no hosting required",
+    "no self-hosted inference",
+    "no self-hosted",
+    "no cloud hosting",
+    "local-only",
+    "local only",
+    "on-prem",
+    "air-gapped",
+)
+
+def _spec_signals_no_hosting(spec_text: str) -> bool:
+    """Plain substring check, same zero-false-positive-risk class as Scribe's
+    _DIFF_SYNTAX_TOKENS / _EXAMPLE_DOMAIN_TOKENS checks -- these phrases don't
+    legitimately co-occur with a spec that also needs cloud pricing."""
+    lowered = spec_text.lower()
+    return any(signal in lowered for signal in _NO_HOSTING_SIGNALS)
 
 def _extract_services_fallback(spec_text: str) -> list[str]:
     """If the model's tool call omits services, sniff obvious ones from spec text."""
     known = list(_STUB_PRICES.keys())
     found = [s for s in known if re.search(rf"\b{s}\b", spec_text, re.IGNORECASE)]
     return found or ["EC2"]  # never call Infracost with an empty list
-
 
 def _call_gemma(messages: list[dict], tools: list[dict] | None = None) -> dict:
     """Single call to llama-server's OpenAI-compatible endpoint."""
@@ -147,48 +161,67 @@ def _call_gemma(messages: list[dict], tools: list[dict] | None = None) -> dict:
 
     return data
 
-
 def run_researcher(spec_text: str) -> ResearcherOutput:
-    """
-    Full Researcher loop: prompt -> tool call -> Infracost -> summary ->
-    ResearcherOutput. No DBOS dependency — caller wires blackboard writes
-    (see write_to_blackboard below, or a future @DBOS.step() wrapper).
-    """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Spec:\n{spec_text}"},
     ]
 
+    no_hosting = _spec_signals_no_hosting(spec_text)
+
     first = _call_gemma(messages, tools=[INFRACOST_TOOL])
     choice = first["choices"][0]["message"]
     tool_calls = choice.get("tool_calls") or []
+    fallback_reason: str | None = None
 
     if not tool_calls:
-        # Gemma didn't call the tool — fall back so the pipeline doesn't stall,
-        # but flag it so the smoke test / Judge can see it happened.
-        services = _extract_services_fallback(spec_text)
-        tool_result = query_infracost(services)
-        tool_call_succeeded = False
-
-        # Fixed: pricing data must reach the summary call even on the
-        # fallback path. Folded into a user-role message rather than a
-        # synthetic "tool" message, since we don't have a real tool_call_id
-        # to attach it to and some OpenAI-compatible servers validate that.
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    f"Pricing data (from a stubbed/fallback lookup, not a "
-                    f"model-initiated tool call): {json.dumps(tool_result)}"
-                ),
-            }
-        )
+        if no_hosting:
+            # Spec explicitly says no cloud hosting -- _extract_services_fallback's
+            # `found or ["EC2"]` default would fabricate a cost line item with no
+            # basis in the spec (confirmed on openrouter_rag.json / workflow
+            # 6b0b7b10-...: EC2 $30/mo guessed against a spec stating "no hosting
+            # required"). Skip Infracost entirely rather than guess.
+            services = []
+            tool_result = {"provider": "aws", "line_items": []}
+            tool_call_succeeded = False
+            fallback_reason = "no_hosting_detected"
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "No pricing lookup performed: spec indicates no cloud "
+                        "hosting is required."
+                    ),
+                }
+            )
+        else:
+            services = _extract_services_fallback(spec_text)
+            tool_result = query_infracost(services)
+            tool_call_succeeded = False
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Pricing data (from a stubbed/fallback lookup, not a "
+                        f"model-initiated tool call): {json.dumps(tool_result)}"
+                    ),
+                }
+            )
     else:
         call = tool_calls[0]
         args = json.loads(call["function"]["arguments"])
         services = args.get("services") or _extract_services_fallback(spec_text)
         tool_result = query_infracost(services, provider=args.get("provider", "aws"))
         tool_call_succeeded = True
+
+        if no_hosting and services:
+            # Model called Infracost anyway despite an explicit no-hosting spec --
+            # a different failure shape from the fallback guessing case (this is
+            # the model choosing to hallucinate a cloud dependency, not the code
+            # defaulting to one). Flag, don't suppress -- a real tool call
+            # succeeded and the reviewer should see what happened, same
+            # "flag inline, don't silently drop" pattern as Scribe/Critic guards.
+            fallback_reason = "model_called_infracost_despite_no_hosting_spec"
 
         messages.append(choice)
         messages.append(
@@ -199,8 +232,6 @@ def run_researcher(spec_text: str) -> ResearcherOutput:
             }
         )
 
-    # Second pass: get the natural-language summary now that pricing is
-    # known — always included now, regardless of which branch above ran.
     final = _call_gemma(
         messages + [{"role": "user", "content": "Summarise the pricing context in under 150 words."}]
     )
@@ -214,6 +245,7 @@ def run_researcher(spec_text: str) -> ResearcherOutput:
         pricing_context={item.service: item.monthly_cost_usd for item in pricing_items},
         summary=summary,
         tool_call_succeeded=tool_call_succeeded,
+        fallback_reason=fallback_reason,
     )
     return output
 
