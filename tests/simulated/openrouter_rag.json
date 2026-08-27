@@ -1,0 +1,51 @@
+{
+  "spec_version": 1,
+  "project_overview": {
+    "purpose": "Personal knowledge-base RAG assistant that answers questions from a single user's own notes (Markdown files) by retrieving relevant passages and generating a grounded answer with citations back to the source note",
+    "target_users": "A single individual user querying their own personal notes; not multi-tenant, no other users",
+    "deployment_environment": "Single-machine local script/CLI, no hosting required; only outbound calls are to the embedding API and OpenRouter"
+  },
+  "functional_requirements": {
+    "core_features": [
+      "Ingestion Script (Python): reads a local folder of Markdown notes, chunks each file by heading, tags each chunk with its source filename",
+      "Embedding Step (Python): generates a vector embedding for each chunk using a hosted embedding API; re-embeds only files that changed since the last run",
+      "Local Vector Store (SQLite + vector extension, or a flat file index): stores chunk embeddings and metadata for similarity search",
+      "Query + Generation (Python, via OpenRouter): given a user question, retrieves the top-k most similar chunks, then sends them plus the question to OpenRouter, which routes to a configured model (e.g. Claude or GPT), generating an answer with inline citations to the source note filename"
+    ],
+    "key_user_flows": [
+      "User runs the ingestion script against their notes folder -> new/changed files are chunked and embedded -> Local Vector Store is updated",
+      "User asks a question via CLI -> top-k relevant chunks are retrieved -> OpenRouter generates a cited answer -> answer is printed with the source filenames it drew from"
+    ],
+    "integration_points": [
+      "Hosted embedding API",
+      "OpenRouter API (model-agnostic access to Claude, GPT, and other hosted LLMs for generation)"
+    ]
+  },
+  "non_functional_requirements": {
+    "performance": "Answer latency under 5 seconds end-to-end for a single query on a typical notes folder (under 500 files)",
+    "scalability": "Single user, single machine; no concurrent query load expected",
+    "availability": "No uptime target; personal tool, run on demand",
+    "security": "Notes may contain personal information; embeddings and chunks stored locally only, never uploaded except as query context sent to the embedding API and OpenRouter at query time",
+    "observability": "Simple log per query: question, retrieved chunk sources, latency; no dashboard required"
+  },
+  "technical_constraints": {
+    "language_framework": ["Python"],
+    "existing_systems": [
+      "Local folder of Markdown notes (existing, user-owned)"
+    ],
+    "budget_infra_limits": "Pay-per-use pricing via embedding API and OpenRouter; no self-hosted inference",
+    "team_skillset": "Solo developer, Python-only"
+  },
+  "data_architecture": {
+    "data_sources": [
+      "Local Markdown notes (user-owned, plaintext)"
+    ],
+    "storage_requirements": "Local vector index (SQLite or flat file) for chunk embeddings + metadata; no cloud storage",
+    "data_flow": "Markdown notes -> Ingestion Script chunks by heading -> Embedding Step generates vectors -> Local Vector Store updates -> user query -> top-k retrieval -> OpenRouter generation -> cited answer printed to CLI",
+    "retention_compliance": "All data stays local; no retention policy needed beyond the user's own notes folder"
+  },
+  "open_questions": [
+    "Should the OpenRouter model choice be fixed at setup, or selectable per-query?",
+    "Is re-embedding on every changed file sufficient, or is a periodic full re-index needed to catch missed changes?"
+  ]
+}
