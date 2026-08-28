@@ -1372,11 +1372,12 @@ finishes, nothing extra to run before `send_approval.py`).
 
 ## 9. Paper Trail
 
-**Status:** First approved run landed 27 Aug 2026 (workflow
-`52dc5e24-795b-40fb-8fa7-1572c98ce8a6`, `openrouter_rag.json`). Remaining:
-confirm the DB/file write, then commit + confirm Mermaid rendering on
-GitLab. Review-doc generation automated as of §7.2 (26 Aug 2026) — no
-manual render step needed before approving.
+**Status:** Closed (28 Aug 2026). First approved run landed 27 Aug 2026
+(workflow `52dc5e24-795b-40fb-8fa7-1572c98ce8a6`, `openrouter_rag.json`).
+Mid-closure, the artifact folder layout changed from a single
+`artifacts/v<n>/` to a split `artifacts/adr/v<n>/` + `artifacts/architecture/v<n>/`
+— see §9.1 below for why and what changed. Review-doc generation automated
+as of §7.2 (26 Aug 2026) — no manual render step needed before approving.
 
 - [x] Verify `revision_cycles` rows exist for today's six rejected
   `cloud_rag.json` workflows (`b67bea1a`, `34876593`, `166ad426`,
@@ -1442,8 +1443,84 @@ manual render step needed before approving.
     likely `spec_version_id` or similar). Low priority, file + status +
     artifacts-row checks already give enough confidence; revisit with
     `\d artifacts` if ever needed.
-- [ ] Commit `artifacts/v1/*.md` to GitLab
-- [ ] Confirm GitLab renders `context_diagram.md` (C4Context block) inline
+
+  **Path note (28 Aug 2026):** `adr_0001.md` originally landed at
+  `artifacts/v1/adr_0001.md` as confirmed above. It has since been moved
+  to `artifacts/adr/v1/adr_0001.md` as part of the §9.1 folder split — see
+  below. The Postgres/frontmatter/content confirmations above are
+  unaffected by the move (file content unchanged, only its path).
+- [x] Commit `artifacts/adr/v1/*.md` (moved from `artifacts/v1/`, §9.1) to
+  GitLab. **Confirmed (28 Aug 2026):** `adr_0001.md` committed at
+  `artifacts/adr/v1/adr_0001.md`.
+- [x] Confirm GitLab renders the diagram source (`artifacts/architecture/v1/adr_0001.md`,
+  C4Context block) inline. **Confirmed (28 Aug 2026), commit `172ae5db`
+  ("chore: Generate the context diagram of the architecture from t...").**
+  Viewed in GitLab's Preview tab, not raw view: full C4Context diagram
+  renders correctly — User, CLI Application, Embedding API, OpenRouter
+  API, and Local Markdown Notes nodes with all five `Rel()` edges shown,
+  matching the Architect output from workflow `52dc5e24-...` exactly.
+  GitLab's native Mermaid support (fenced ` ```mermaid ` block) confirmed
+  working end-to-end, not just assumed from docs.
+
+---
+
+## 9.1 Diagram Source Was Never Persisted to the Artifact Store — Fixed (28 Aug 2026)
+
+Surfaced while closing the two items above: grepping `adr_0001.md` for the
+Mermaid diagram found nothing. Root cause wasn't a fence-tag bug — it was a
+real gap between the spec and the implementation.
+
+- **Gap confirmed:** spec §2 ("every spec version, diagram source, ADR, and
+  critique persisted") and §5's Storage Requirements table both commit to
+  versioning diagram source alongside the ADR. `ADRRecord` /
+  `serialize_adr_markdown()` (`pipeline/persistence.py`) never carried a
+  diagram field — only `context`/`decision`/`consequences`/`diff_summary`/
+  `affected_diagrams`. The Mermaid source only ever reached Postgres (the
+  `artifacts.context_diagram`/`diagram_source` columns, written by
+  `insert_artifact_row()`) and the gitignored `artifacts/review/` doc —
+  never the git-committed, versioned artifact store the spec describes.
+- **Fix:** rather than folding the diagram into the ADR file itself, split
+  the artifact tree in two, paired by identical filename:
+  - `artifacts/adr/v<n>/adr_<NNNN>.md` — the ADR (moved from the old flat
+    `artifacts/v<n>/adr_<NNNN>.md`)
+  - `artifacts/architecture/v<n>/adr_<NNNN>.md` — the diagram source, new
+- **Code changed:**
+  - `pipeline/persistence.py`: `_next_adr_id()` and `write_adr_file()`
+    updated to scan/write under `adr/v<n>/` instead of `v<n>/`. New
+    `serialize_diagram_markdown()`, `write_diagram_file()`, and
+    `persist_diagram()` write the paired diagram file.
+  - `agents/architect.py`: `ADR_GLOB_PATTERN` updated from `"v*/adr_*.md"`
+    to `"adr/v*/adr_*.md"` to match — this reader and the writer above
+    must agree, since a silent mismatch here is exactly the failure mode
+    that already burned `informed_by_adrs` once before (see §7's
+    "Bugs found and fixed during §8 stress-testing" entry on bracket-safe
+    frontmatter).
+  - `pipeline/run.py`: new `persist_diagram_step()`, called in the
+    `if approved:` branch right after `persist_adr_step()` (needs the
+    assigned `adr_id`), never on rejection — matches the existing design
+    where only approved runs touch the versioned artifact store.
+  - `tests/integration/test_persistence.py`: path assertion updated to
+    `artifacts/adr/v<n>/`; new coverage added for `persist_diagram()`
+    (path correctness + confirms a real ` ```mermaid ` fence is written).
+    **Confirmed 28 Aug 2026: 3/3 passing**, including the new diagram
+    assertions.
+- **Migration for `adr_0001.md`:** hand-migrated since the code fix only
+  applies to future approved runs — `git mv` into `artifacts/adr/v1/`,
+  diagram source backfilled to `artifacts/architecture/v1/adr_0001.md` via
+  `persist_diagram()` directly (not hand-typed, to avoid drift from what
+  the pipeline itself would produce). Confirmed rendering on GitLab, see
+  §9 items above.
+- **Not yet done:** `tests/smoke/test_persistence.py` and any Architect-side
+  test exercising `_load_recent_adrs()`/`ADR_GLOB_PATTERN` directly against
+  the real (non-`tmp_path`) `artifacts/` tree haven't been checked for the
+  same path assumption yet. Low risk — the integration test's real-parser
+  round-trip already covers the mechanism — but not confirmed, logged per
+  usual practice rather than assumed fine.
+- **Known gap, not pursued:** Postgres has no backup/export step (MVP
+  scoping decision, 28 Aug 2026) — the git-committed files under
+  `artifacts/adr/` and `artifacts/architecture/` are the durable record;
+  Postgres is the local queryable store only and does not survive a
+  reinstall/wipe.
 
 ---
 
