@@ -4,7 +4,7 @@ Spec-driven, multi-agent architecture review pipeline that runs entirely on loca
 
 It automates the C4 diagram + Architecture Decision Record (ADR) discipline for solo developers, small teams, and solution architects, closing the gap between technical and business stakeholders. It is not a code generation tool.
 
-> Full spec: `agent_swarm_architecture_spec.docx` (v0.10)
+> Full spec: `agent_swarm_architecture_spec.docx` (v0.12)
 > Public overview: `agent_swarm_at_the_edge_public.docx`
 > Environment setup: `KICKOFF_CHECKLIST.md` — start there before this README if you're bootstrapping from scratch.
 
@@ -26,7 +26,7 @@ Researcher (Gemma) → Architect (Gemma) → [swap] → Scribe (LFM) → Critic 
                                                                                      Human review (CLI)
                                                                                      approve / reject
                                                                                               ↓
-                                                                              PostgreSQL + artifacts/v<n>/
+                                                                              PostgreSQL + artifacts/{adr,architecture}/v<n>/
 ```
 
 | Agent | Model | Role | Tools |
@@ -141,11 +141,12 @@ Run this after starting the server and after any `models.ini` change, before bui
    python pipeline/send_approval.py <workflow_id> --supersedes adr_0003,adr_0004    # approve, superseding prior ADR(s)
    python pipeline/send_approval.py <workflow_id> --reject "notes"                  # reject
    ```
-   On approval, the pipeline writes `artifacts/v<n>/adr_<NNNN>.md` and an `artifacts` row in PostgreSQL. On rejection, it writes a `revision_cycles` row with the required notes. **Rejection does not automatically re-run the pipeline from Critic** — re-submit a revised spec via `pipeline/run.py` to go through the pipeline again. Automatic re-run from Critic on rejection is a parked v2 improvement, not yet implemented.
+   On approval, the pipeline writes `artifacts/adr/v<n>/adr_<NNNN>.md` (ADR text) and `artifacts/architecture/v<n>/adr_<NNNN>.md` (paired Mermaid diagram source, same filename) plus an `artifacts` row in PostgreSQL. On rejection, it writes a `revision_cycles` row with the required notes. **Rejection does not automatically re-run the pipeline from Critic** — re-submit a revised spec via `pipeline/run.py` to go through the pipeline again. Automatic re-run from Critic on rejection is a parked v2 improvement, not yet implemented.
 
 8. **Verify**
-   - Phoenix UI at `localhost:6006` — per-agent spans (prompt, tool calls, latency, model)
-   - `artifacts/v<n>/` — Markdown paper trail
+   - Phoenix UI at `localhost:6006` — reachable, but no per-agent spans yet: no OTel/OpenInference instrumentation is wired into `agents/`/`pipeline/` (`traceCount: 0` on every run to date). Open item, see Status below.
+   - `artifacts/adr/v<n>/` — ADR markdown paper trail
+   - `artifacts/architecture/v<n>/` — paired Mermaid diagram source, same filename as its ADR
    - PostgreSQL — versioned record on approval
 
 ---
@@ -171,7 +172,8 @@ All tests run against `TESTING_DATABASE_URL`, never the real DB — enforced by 
 
 ```
 agents/             agent implementations (researcher, architect, scribe, critic, judge)
-artifacts/v1/        approved run outputs (Mermaid diagrams, ADRs)
+artifacts/adr/    approved ADR markdown (paper trail)
+artifacts/architecture/  paired Mermaid diagram source, same filename as its ADR
 eval/                eval/rubric_v1.json — versioned Judge thresholds
 schemas/             Pydantic models, 001_app_tables.sql, 002_add_adr_id.sql
 pipeline/            run.py (DBOS workflow), persistence.py, send_approval.py, run_migration.py
@@ -191,4 +193,6 @@ Rejection currently persists revision notes but does not automatically loop the 
 
 ## Status
 
-v0.10. §6 agent validation and §7 DBOS pipeline wiring (including approval/rejection persistence) complete and validated — unit-level (`tests/integration/test_persistence.py`) and full-pipeline (`tests/integration/test_pipeline_approval.py`), both passing against real inference and real Postgres. Open item: §8 End-to-End Run (see `KICKOFF_CHECKLIST.md` §8) — sustained thermal validation across a full run is the primary remaining item.
+v0.12. §6 agent validation, §7 DBOS pipeline wiring, and §8 End-to-End Run are complete and validated. **§9 Paper Trail closed (28 Aug 2026):** first approved run (workflow `52dc5e24-795b-40fb-8fa7-1572c98ce8a6`, `openrouter_rag.json`) confirmed end-to-end — `adr_id`, `artifacts` row, and versioned markdown files verified via direct Postgres query. The versioned artifact store was split into paired `artifacts/adr/v<n>/` and `artifacts/architecture/v<n>/` trees (§9.1) after discovering diagram source was never reaching the git-committed store, only Postgres and a gitignored review doc.
+
+Open item: **Observability instrumentation.** Arize Phoenix is deployed and reachable (`localhost:6006/4317`), but no OTel/OpenInference instrumentation exists anywhere in `agents/` or `pipeline/` — confirmed by grep, not assumption (`traceCount: 0` on every run to date, approved or rejected). This is a genuine gap, not a deferred task; see spec §6 Open Questions.
