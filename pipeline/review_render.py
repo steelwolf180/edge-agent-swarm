@@ -14,6 +14,15 @@ import json
 def fmt_json(obj) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
+def fmt_num(v) -> str:
+    """Display-only rounding to 3 decimal places. Leaves ints, strings,
+    None, etc. untouched — only floats get rounded, and round() naturally
+    drops trailing zeros (3.0 stays '3.0', not '3.000'). Never touches
+    what's persisted to Postgres/JSON, only what's rendered for a human."""
+    if isinstance(v, float):
+        return str(round(v, 3))
+    return str(v) if v is not None else ""
+
 def render_researcher(output: dict) -> str:
     lines = ["## Researcher", ""]
     lines.append(f"**Services identified:** {', '.join(output.get('services_identified', []))}")
@@ -23,7 +32,7 @@ def render_researcher(output: dict) -> str:
     lines.append("| Service | Provider | Monthly USD | Notes |")
     lines.append("|---|---|---|---|")
     for p in output.get("pricing", []):
-        lines.append(f"| {p.get('service')} | {p.get('provider')} | {p.get('monthly_cost_usd')} | {p.get('notes', '')} |")
+        lines.append(f"| {p.get('service')} | {p.get('provider')} | {fmt_num(p.get('monthly_cost_usd'))} | {p.get('notes', '')} |")
     lines.append("")
     lines.append("**Summary:**")
     lines.append("")
@@ -96,8 +105,8 @@ def render_judge(output: dict) -> str:
     lines.append("|---|---|---|---|---|---|---|")
     for name, score in output.get("scores", {}).items():
         lines.append(
-            f"| {name} | {score.get('value')} | {score.get('target')} | "
-            f"{score.get('flag_threshold')} | {score.get('direction')} | "
+            f"| {name} | {fmt_num(score.get('value'))} | {fmt_num(score.get('target'))} | "
+            f"{fmt_num(score.get('flag_threshold'))} | {score.get('direction')} | "
             f"{score.get('flagged')} | {score.get('flag_reason') or ''} |"
         )
     lines.append("")
