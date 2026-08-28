@@ -3,7 +3,8 @@ tests/integration/test_persistence.py — integration test for
 pipeline/persistence.py (§7).
 
 Verifies correct interaction across three real components: Postgres
-(DBOS_SYSTEM_DATABASE_URL), the filesystem (artifacts/v<n>/adr_*.md), and
+(DBOS_SYSTEM_DATABASE_URL), the filesystem (artifacts/adr/v<n>/adr_*.md
+and, as of 28 Aug 2026, artifacts/architecture/v<n>/adr_*.md), and
 agents/architect.py's ADR parser. Not a smoke test — asserts field-level
 correctness, round-trips through a second module's real parsing logic,
 and checks idempotency under simulated DBOS step retry. See
@@ -35,6 +36,7 @@ from pipeline.persistence import (
     ensure_pipeline_run_row,
     update_pipeline_run_status,
     persist_adr,
+    persist_diagram,
     insert_artifact_row,
     insert_revision_cycle_row,
     _db_url,
@@ -153,7 +155,7 @@ def test_approval_path_end_to_end(workflow_id, artifacts_root):
         artifacts_root=artifacts_root,
     )
     assert adr_record.adr_id == "adr_0001"
-    written_path = artifacts_root / f"v{TEST_SPEC_VERSION}" / f"{adr_record.adr_id}.md"
+    written_path = artifacts_root / "adr" / f"v{TEST_SPEC_VERSION}" / f"{adr_record.adr_id}.md"
     assert written_path.exists()
 
     # Round-trip through the REAL agents/architect.py parser — the
@@ -167,11 +169,30 @@ def test_approval_path_end_to_end(workflow_id, artifacts_root):
     assert reparsed.decision == adr_record.decision
     assert reparsed.consequences == adr_record.consequences
 
+    # Diagram file — pairs with the ADR file above by identical filename
+    # under a different top-level folder (artifacts/architecture/v<n>/
+    # vs artifacts/adr/v<n>/). Added 28 Aug 2026 alongside the adr/ split.
+    architect_output = _stub_architect_output()
+    diagram_path = persist_diagram(
+        adr_record.adr_id,
+        TEST_SPEC_VERSION,
+        architect_output.context_diagram,
+        artifacts_root=artifacts_root,
+    )
+    expected_diagram_path = (
+        artifacts_root / "architecture" / f"v{TEST_SPEC_VERSION}" / f"{adr_record.adr_id}.md"
+    )
+    assert diagram_path == expected_diagram_path
+    assert diagram_path.exists()
+    diagram_text = diagram_path.read_text()
+    assert "```mermaid" in diagram_text
+    assert architect_output.context_diagram.strip() in diagram_text
+
     # Exercises the ArchitectOutput.diagram_source.model_dump_json()
     # assumption directly, with a real DiagramProvenance instance.
     artifact_id = insert_artifact_row(
         workflow_id,
-        _stub_architect_output(),
+        architect_output,
         adr_record,
         _stub_judge_output(),
     )
