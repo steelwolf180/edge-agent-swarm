@@ -78,6 +78,7 @@ from agents.scribe import run_scribe
 from schemas.adr import ADROutput, ADRRecord
 from pipeline.persistence import (
     persist_adr,
+    persist_diagram,
     ensure_spec_version_row,
     ensure_pipeline_run_row,
     update_pipeline_run_status,
@@ -395,6 +396,18 @@ def persist_adr_step(adr_output: dict, spec_version: int, supersedes: list[str] 
     )
     return record.model_dump(mode="json")
 
+
+@DBOS.step()
+def persist_diagram_step(adr_id: str, spec_version: int, context_diagram: str) -> str:
+    """Writes artifacts/architecture/v<n>/<adr_id>.md — the diagram-source
+    counterpart to persist_adr_step's ADR file, added 28 Aug 2026 to close
+    the spec §2/§5 gap (diagram source was only ever in Postgres/the
+    gitignored review doc, never in the committed artifact store). Called
+    after persist_adr_step since it needs the assigned adr_id."""
+    path = persist_diagram(adr_id, spec_version, context_diagram)
+    return str(path)
+
+
 @DBOS.step()
 def generate_review_doc_step(workflow_id: str, outputs: dict) -> str:
     """Writes artifacts/review/<workflow_id>.md + .json from in-memory agent
@@ -560,10 +573,16 @@ async def architecture_review_workflow(
 
     if approved:
         adr_record = persist_adr_step(adr_output, spec_version, decision.get("supersedes"))
+        diagram_path = persist_diagram_step(
+            adr_record["adr_id"], spec_version, architect_output["context_diagram"]
+        )
         artifact_id = persist_approval_step(
             DBOS.workflow_id, architect_output, adr_record, judge_output
         )
-        DBOS.logger.info(f"ADR written: {adr_record['adr_id']}, artifact_id={artifact_id}")
+        DBOS.logger.info(
+            f"ADR written: {adr_record['adr_id']}, diagram: {diagram_path}, "
+            f"artifact_id={artifact_id}"
+        )
 
     else:
         if not notes:

@@ -4,7 +4,7 @@ agents/architect.py
 Architect agent (Gemma 4 E4B QAT via llama-server, router mode).
 No tools — pure text generation. Reads spec + Researcher's pricing
 context off the blackboard, plus recent prior ADRs scanned from
-artifacts/v*/adr_*.md, and emits ArchitectOutput.
+artifacts/adr/v*/adr_*.md, and emits ArchitectOutput.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ MODEL_NAME = _require_env("GEMMA_MODEL_NAME")
 MAX_TOKENS = int(_require_env("ARCHITECT_TOKEN_BUDGET"))
 
 ARTIFACTS_ROOT = Path("artifacts")
-ADR_GLOB_PATTERN = "v*/adr_*.md"
+ADR_GLOB_PATTERN = "adr/v*/adr_*.md"
 ADR_CONTEXT_LIMIT = 3
 ADR_DECISION_TRUNCATE = 200
 

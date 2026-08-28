@@ -3,18 +3,29 @@ pipeline/persistence.py — approval-time persistence for the Agent Swarm
 pipeline (§7). Two responsibilities:
 
 1. ADR file writes: bridges Scribe's ADROutput into a written ADRRecord
-   under artifacts/v<n>/adr_<NNNN>.md, matching the frontmatter shape
+   under artifacts/adr/v<n>/adr_<NNNN>.md, matching the frontmatter shape
    agents/architect.py already parses (schemas/adr.py, architect.py's
    _parse_adr_markdown / _FRONTMATTER_RE / _SECTION_RE).
-2. Postgres writes: spec_versions / pipeline_runs / artifacts /
+2. Diagram file writes: bridges the Architect's Mermaid C4Context source
+   into artifacts/architecture/v<n>/adr_<NNNN>.md — same adr_id/spec_version
+   pairing as the ADR file above, so the two live at identical relative
+   paths under different top-level folders (adr/ vs architecture/) and
+   stay trivially pairable by filename. Added 28 Aug 2026 to close a spec
+   §2/§5 gap: diagram source was persisted to Postgres (artifacts table)
+   but never to the git-committed artifact store.
+3. Postgres writes: spec_versions / pipeline_runs / artifacts /
    revision_cycles, per schemas/001_app_tables.sql + 002_add_adr_id.sql.
-   Same database as DBOS itself (DBOS_SYSTEM_DATABASE_URL).
+   Same database as DBOS itself (DBOS_SYSTEM_DATABASE_URL). Note: Postgres
+   is the local queryable store only — no backup/export step exists by
+   design (MVP scoping decision, 28 Aug 2026). The git-committed files
+   under artifacts/ are the durable record, not the DB.
 
 Design decisions locked in per checklist §7:
   - adr_id: sequential ("adr_0001", "adr_0002", ...), not UUID — matches
     the worked example in schemas/adr.py's module docstring and the
-    ADR_GLOB_PATTERN "v*/adr_*.md" filename convention architect.py
-    already reads by.
+    ADR_GLOB_PATTERN "adr/v*/adr_*.md" filename convention architect.py
+    already reads by (moved under artifacts/adr/ on 28 Aug 2026 — see
+    "Diagram file writes" above for why the split happened).
   - supersedes: human-specified at approval time (via --supersedes on
     send_approval.py), not inferred from spec diff.
   - artifacts.adr_id: added via 002_add_adr_id.sql so the Postgres row
@@ -51,16 +62,18 @@ ADR_ID_RE = re.compile(r"adr_(\d+)\.md$")
 # ---------------------------------------------------------------------------
 
 def _next_adr_id(artifacts_root: Path = ARTIFACTS_ROOT) -> str:
-    """Scans artifacts/v*/adr_*.md filenames (the filename IS the adr_id
-    by convention) for the highest existing sequence number. Global across
-    spec versions, not per-version: adr_id must be a stable identifier
-    that `supersedes` can reference regardless of which artifacts/v<n>/
-    folder it lives in."""
+    """Scans artifacts/adr/v*/adr_*.md filenames (the filename IS the
+    adr_id by convention) for the highest existing sequence number. Global
+    across spec versions, not per-version: adr_id must be a stable
+    identifier that `supersedes` can reference regardless of which
+    artifacts/adr/v<n>/ folder it lives in. Glob updated 28 Aug 2026 to
+    match architect.py's ADR_GLOB_PATTERN after the adr/ vs architecture/
+    folder split — see module docstring."""
     if not artifacts_root.exists():
         return "adr_0001"
 
     max_n = 0
-    for path in artifacts_root.glob("v*/adr_*.md"):
+    for path in artifacts_root.glob("adr/v*/adr_*.md"):
         match = ADR_ID_RE.search(path.name)
         if match:
             max_n = max(max_n, int(match.group(1)))
@@ -129,8 +142,8 @@ def serialize_adr_markdown(record: ADRRecord) -> str:
 
 
 def write_adr_file(record: ADRRecord, artifacts_root: Path = ARTIFACTS_ROOT) -> Path:
-    """Writes artifacts/v<spec_version>/adr_<NNNN>.md."""
-    version_dir = artifacts_root / f"v{record.spec_version}"
+    """Writes artifacts/adr/v<spec_version>/adr_<NNNN>.md."""
+    version_dir = artifacts_root / "adr" / f"v{record.spec_version}"
     version_dir.mkdir(parents=True, exist_ok=True)
 
     path = version_dir / f"{record.adr_id}.md"
@@ -162,6 +175,55 @@ def persist_adr(
     )
     write_adr_file(record, artifacts_root)
     return record
+
+
+# ---------------------------------------------------------------------------
+# Diagram file writes (added 28 Aug 2026 — see module docstring)
+# ---------------------------------------------------------------------------
+
+def serialize_diagram_markdown(adr_id: str, context_diagram: str) -> str:
+    """Writes the Architect's Mermaid C4Context source as its own file,
+    paired 1:1 with artifacts/adr/v<n>/<adr_id>.md by identical filename
+    under a different top-level folder. Deliberately not folded into
+    ADRRecord/serialize_adr_markdown() — spec §2/§5 lists diagram source
+    and ADR as separate, co-equal artifacts, and GitLab's Mermaid renderer
+    needs its own fenced ```mermaid block to render inline, independent
+    of the ADR's frontmatter/body shape architect.py's parser depends on."""
+    return (
+        f"<!-- Diagram source for {adr_id}, generated by Architect (Gemma). "
+        f"Rendered inline on GitLab via its native Mermaid support. -->\n\n"
+        f"```mermaid\n{context_diagram.strip()}\n```\n"
+    )
+
+
+def write_diagram_file(
+    adr_id: str,
+    spec_version: int,
+    context_diagram: str,
+    artifacts_root: Path = ARTIFACTS_ROOT,
+) -> Path:
+    """Writes artifacts/architecture/v<spec_version>/<adr_id>.md. No
+    FileExistsError guard like write_adr_file — unlike an ADR, silently
+    re-rendering the same diagram on a retried step is harmless (no
+    sequential-id collision risk, since adr_id is supplied, not derived
+    here)."""
+    version_dir = artifacts_root / "architecture" / f"v{spec_version}"
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    path = version_dir / f"{adr_id}.md"
+    path.write_text(serialize_diagram_markdown(adr_id, context_diagram))
+    return path
+
+
+def persist_diagram(
+    adr_id: str,
+    spec_version: int,
+    context_diagram: str,
+    artifacts_root: Path = ARTIFACTS_ROOT,
+) -> Path:
+    """Thin wrapper matching persist_adr()'s shape, for symmetry when
+    called from run.py's persist_diagram_step()."""
+    return write_diagram_file(adr_id, spec_version, context_diagram, artifacts_root)
 
 
 # ---------------------------------------------------------------------------
