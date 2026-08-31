@@ -7,7 +7,7 @@ spec's tables alone; those don't match the real code.
 
 REAL SIGNATURES THIS FILE WIRES:
     researcher.run_researcher(spec_text: str) -> ResearcherOutput            [sync]
-    architect.call_architect(spec: dict, pricing_context: dict) -> ArchitectOutput
+    architect.run_architect(spec: dict, pricing_context: dict) -> ArchitectOutput
         (reads prior ADRs itself from artifacts/v*/adr_*.md — no prior_adr arg) [sync]
     scribe.run_scribe(prior_spec: ArchitectureSpec | None, current_spec: ArchitectureSpec,
                        blackboard_context: str) -> ADROutput                  [async]
@@ -69,7 +69,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from agents.architect import call_architect
+from agents.architect import run_architect
 from agents.critic import run_critic
 from agents.judge import calculate_metrics
 from agents.researcher import run_researcher
@@ -334,7 +334,7 @@ def researcher_step(spec_text: str) -> dict:
 
 @DBOS.step(retries_allowed=True, max_attempts=3)
 def architect_step(spec: dict, pricing_context: dict) -> dict:
-    return call_architect(spec, pricing_context).model_dump(mode="json")
+    return run_architect(spec, pricing_context).model_dump(mode="json")
 
 
 @DBOS.step(retries_allowed=True, max_attempts=3)

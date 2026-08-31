@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from agents.architect import call_architect
+from agents.architect import run_architect
 from pipeline.render import render_diagram_image
 from schemas.architect import ArchitectOutput
 
@@ -42,7 +42,7 @@ STUB_PRICING_CONTEXT = {
 
 @pytest.fixture(scope="module")
 def architect_output() -> ArchitectOutput:
-    return call_architect(STUB_SPEC, STUB_PRICING_CONTEXT)
+    return run_architect(STUB_SPEC, STUB_PRICING_CONTEXT)
 
 
 def test_diagram_starts_with_c4context(architect_output: ArchitectOutput) -> None:
@@ -50,7 +50,7 @@ def test_diagram_starts_with_c4context(architect_output: ArchitectOutput) -> Non
 
 
 def test_architect_output_validates(architect_output: ArchitectOutput) -> None:
-    # Round-trip through the schema again, not just trust the object call_architect
+    # Round-trip through the schema again, not just trust the object run_architect
     # already built — catches anything that only "passed" because it skipped validation.
     dumped = architect_output.model_dump()
     revalidated = ArchitectOutput.model_validate(dumped)

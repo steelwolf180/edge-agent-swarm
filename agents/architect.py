@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from schemas.adr import ADRRecord
 from schemas.architect import ArchitectOutput, DiagramProvenance
 from dotenv import load_dotenv
+from pipeline.observability import traced_agent_step
 
 import json
 import re
@@ -383,8 +384,8 @@ def parse_model_sections(raw: str) -> dict[str, Any]:
         "components": components,
     }
 
-
-def call_architect(
+@traced_agent_step("architect", model="gemma-4-e4b-qat")
+def run_architect(
     spec: dict[str, Any],
     pricing_context: dict[str, Any],
     base_url: str = BASE_URL,
