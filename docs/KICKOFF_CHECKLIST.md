@@ -1576,11 +1576,18 @@ real gap between the spec and the implementation.
   confirmed, queryable trace record — consistent with ruthless MVP scoping
   this close to the demo deadline. Revisit only if a future session has
   slack for it; not blocking.
-- [x] `lm-sensors` readable from Python thermal guard step — deprioritized,
-  skipped this session (31 Aug 2026). Not re-opened as blocking; existing
-  CLI-level `sensors -u` checks and the in-pipeline `thermal_guard_step()`
-  (already validated end-to-end, §7/§8) are considered sufficient coverage
-  for demo purposes. Revisit only if time permits.
+- [x] `lm-sensors` readable from Python thermal guard step — confirmed
+  31 Aug 2026. `_read_cpu_package_temp_c()`'s regex verified correct
+  against real `sensors -u` output (isolated test: fed the exact captured
+  block directly to the parsing logic, bypassing subprocess/import
+  overhead — parsed `50.0` correctly, matching `sensors -u` exactly).
+  Initial back-to-back comparison showed a 14°C gap (`sensors -u`: 48°C
+  vs. `python -c "from pipeline.run import ..."`: 62°C) — traced to
+  `pipeline.run`'s import chain (every agent module + Phoenix OTel
+  `register()`) being genuine CPU work on this 2-4 thread CPU, not a
+  parsing bug. Confirmed via isolated regex test, not assumed. No fix
+  needed; guard reads the sensor correctly whenever it's actually called
+  mid-pipeline.
 
 ---
 
