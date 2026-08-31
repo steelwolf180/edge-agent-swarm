@@ -22,6 +22,8 @@ from schemas.spec import ArchitectureSpec
 from dotenv import load_dotenv
 load_dotenv()
 
+from pipeline.observability import traced_agent_step
+
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL") + "/v1/chat/completions"
 LFM_MODEL_NAME = os.environ.get("LFM_MODEL_NAME")  # must match the model name in models.ini
 SCRIBE_MAX_OUTPUT_TOKENS = int(os.environ.get("SCRIBE_TOKEN_BUDGET"))
@@ -1153,7 +1155,7 @@ def _coerce_adr_string_fields(parsed: dict) -> tuple[dict, list[str]]:
             coerced.append(field)
     return parsed, coerced
 
-
+@traced_agent_step("scribe", model="lfm2.5-vl-1.6b")
 async def run_scribe(
     prior_spec: ArchitectureSpec | None,
     current_spec: ArchitectureSpec,
