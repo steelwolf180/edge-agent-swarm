@@ -22,8 +22,9 @@ import httpx
 
 from schemas.researcher import PricingLineItem, ResearcherOutput
 from dotenv import load_dotenv
-
 load_dotenv()
+
+from pipeline.observability import traced_agent_step
 
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL")
 INFRACOST_URL = os.environ.get("INFRACOST_URL")
@@ -161,6 +162,7 @@ def _call_gemma(messages: list[dict], tools: list[dict] | None = None) -> dict:
 
     return data
 
+@traced_agent_step("researcher", model="gemma-4-e4b-qat")
 def run_researcher(spec_text: str) -> ResearcherOutput:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
