@@ -2,8 +2,8 @@
 
 ## Architecture Specification
 
-*Version 0.12: First Approved Run — Paper Trail Closed*
-*28 August 2026 · Max · On-premise / Edge*
+*Version 0.13: Per-Agent Observability Live*
+*31 August 2026 · Max · On-premise / Edge*
 
 | Gemma Model (Researcher, Architect, Judge) | LFM Model (Scribe, Critic) | Inference Engine |
 |---|---|---|
@@ -20,6 +20,8 @@ It automates the discipline of solution architecture for solo developers, small 
 The output of one pipeline run: a C4 System Context diagram in Mermaid, an Architecture Decision Record triggered by any spec change, a structured gap critique, and a set of scored quality metrics, all requiring human approval before anything is persisted.
 
 As of late August 2026, the pipeline has run this loop end to end on real hardware: a spec went in, all five agents ran in sequence, a human reviewed the output, and an approved diagram and ADR were written to a versioned, git-committed artifact store. Not a demo script, an actual run.
+
+As of 31 August 2026, four of the five agents emit real per-agent traces to Arize Phoenix, confirmed via live pipeline runs.
 
 ## The Problem
 
@@ -135,4 +137,4 @@ The Judge agent scores every run against five deterministic metrics using a calc
 
 ---
 
-*Agent Swarm at the Edge · v0.12 · August 2026 · Max*
+*Agent Swarm at the Edge · v0.13 · August 2026 · Max*

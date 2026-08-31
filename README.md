@@ -4,7 +4,7 @@ Spec-driven, multi-agent architecture review pipeline that runs entirely on loca
 
 It automates the C4 diagram + Architecture Decision Record (ADR) discipline for solo developers, small teams, and solution architects, closing the gap between technical and business stakeholders. It is not a code generation tool.
 
-> Full spec: `agent_swarm_architecture_spec.docx` (v0.12)
+> Full spec: `agent_swarm_architecture_spec.docx` (v0.13)
 > Public overview: `agent_swarm_at_the_edge_public.docx`
 > Environment setup: `KICKOFF_CHECKLIST.md` — start there before this README if you're bootstrapping from scratch.
 
@@ -144,7 +144,7 @@ Run this after starting the server and after any `models.ini` change, before bui
    On approval, the pipeline writes `artifacts/adr/v<n>/adr_<NNNN>.md` (ADR text) and `artifacts/architecture/v<n>/adr_<NNNN>.md` (paired Mermaid diagram source, same filename) plus an `artifacts` row in PostgreSQL. On rejection, it writes a `revision_cycles` row with the required notes. **Rejection does not automatically re-run the pipeline from Critic** — re-submit a revised spec via `pipeline/run.py` to go through the pipeline again. Automatic re-run from Critic on rejection is a parked v2 improvement, not yet implemented.
 
 8. **Verify**
-   - Phoenix UI at `localhost:6006` — reachable, but no per-agent spans yet: no OTel/OpenInference instrumentation is wired into `agents/`/`pipeline/` (`traceCount: 0` on every run to date). Open item, see Status below.
+   - Phoenix UI at `localhost:6006` — per-agent spans confirmed live for Researcher, Architect, Scribe, Critic (project `edge-agent-swarm`); Judge has no LLM call in this codebase (deterministic calculator only), not instrumented by design. Spans carry name/model/status/duration, not full OpenInference semantic conventions — see Status below.
    - `artifacts/adr/v<n>/` — ADR markdown paper trail
    - `artifacts/architecture/v<n>/` — paired Mermaid diagram source, same filename as its ADR
    - PostgreSQL — versioned record on approval
@@ -193,6 +193,6 @@ Rejection currently persists revision notes but does not automatically loop the 
 
 ## Status
 
-v0.12. §6 agent validation, §7 DBOS pipeline wiring, and §8 End-to-End Run are complete and validated. **§9 Paper Trail closed (28 Aug 2026):** first approved run (workflow `52dc5e24-795b-40fb-8fa7-1572c98ce8a6`, `openrouter_rag.json`) confirmed end-to-end — `adr_id`, `artifacts` row, and versioned markdown files verified via direct Postgres query. The versioned artifact store was split into paired `artifacts/adr/v<n>/` and `artifacts/architecture/v<n>/` trees (§9.1) after discovering diagram source was never reaching the git-committed store, only Postgres and a gitignored review doc.
+v0.13. §6 agent validation, §7 DBOS pipeline wiring, and §8 End-to-End Run are complete and validated. **§9 Paper Trail closed (28 Aug 2026):** first approved run (workflow `52dc5e24-795b-40fb-8fa7-1572c98ce8a6`, `openrouter_rag.json`) confirmed end-to-end — `adr_id`, `artifacts` row, and versioned markdown files verified via direct Postgres query. The versioned artifact store was split into paired `artifacts/adr/v<n>/` and `artifacts/architecture/v<n>/` trees (§9.1) after discovering diagram source was never reaching the git-committed store, only Postgres and a gitignored review doc.
 
-Open item: **Observability instrumentation.** Arize Phoenix is deployed and reachable (`localhost:6006/4317`), but no OTel/OpenInference instrumentation exists anywhere in `agents/` or `pipeline/` — confirmed by grep, not assumption (`traceCount: 0` on every run to date, approved or rejected). This is a genuine gap, not a deferred task; see spec §6 Open Questions.
+**Observability instrumentation partially resolved (31 Aug 2026):** four of five agents (Researcher, Architect, Scribe, Critic) now emit real OTel spans to Arize Phoenix via `pipeline/observability.py`, confirmed via a live trace (not just wired) — resolves the `traceCount: 0` gap flagged open as of 21 Aug. Judge has no LLM call anywhere in this codebase (`judge_step()` calls the deterministic `calculate_metrics()` directly), correctly excluded rather than a remaining gap. Full OpenInference semantic conventions (`span.kind`, prompt/completion capture) were deliberately scoped out this session per ruthless MVP scoping — spans currently carry name/model/status/duration only. Remains a v2 candidate; see spec §6 Open Questions.
