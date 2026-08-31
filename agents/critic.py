@@ -28,6 +28,8 @@ from schemas.critic import CriticOutput
 from dotenv import load_dotenv
 load_dotenv()
 
+from pipeline.observability import traced_agent_step
+
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL") + "/v1/chat/completions"
 LFM_MODEL_NAME = os.environ.get("LFM_MODEL_NAME")  # must match the model name in models.ini
 CRITIC_MAX_OUTPUT_TOKENS = int(os.environ.get("CRITIC_TOKEN_BUDGET"))
@@ -1288,7 +1290,7 @@ async def _attempt_regeneration_pass(parsed: dict, architect_output: ArchitectOu
 
     return regenerated
 
-
+@traced_agent_step("critic", model="lfm2.5-vl-1.6b")
 async def run_critic(
     architect_output: ArchitectOutput,
     adr_output: ADROutput,
